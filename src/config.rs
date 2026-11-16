@@ -39,6 +39,8 @@ pub struct Config {
     pub autostart: bool,
     pub start_minimized: bool,
     pub auto_update: bool,
+    /// Linux AppImage: offer to add the app to the application menu on start.
+    pub ask_desktop_entry: bool,
 }
 
 impl Default for Config {
@@ -52,6 +54,7 @@ impl Default for Config {
             autostart: false,
             start_minimized: false,
             auto_update: true,
+            ask_desktop_entry: true,
         }
     }
 }

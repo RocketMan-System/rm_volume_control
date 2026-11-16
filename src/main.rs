@@ -424,6 +424,32 @@ fn wire_callbacks(ui: &AppWindow) {
         with_app(|app| app.read_settings_from_ui());
     });
     ui.on_open_url(|url| open_url(&url));
+    #[cfg(target_os = "linux")]
+    {
+        ui.on_desktop_register(|| {
+            with_app(|app| app.ui.set_desktop_state(desktop::register()));
+        });
+        ui.on_desktop_unregister(|| {
+            with_app(|app| {
+                app.ui.set_desktop_state(desktop::unregister());
+                // Removed on purpose: don't offer it again on the next start.
+                app.cfg.ask_desktop_entry = false;
+                app.save();
+            });
+        });
+        ui.on_desktop_prompt_answer(|add, dont_ask| {
+            with_app(|app| {
+                app.ui.set_desktop_prompt(false);
+                if add {
+                    app.ui.set_desktop_state(desktop::register());
+                }
+                if add || dont_ask {
+                    app.cfg.ask_desktop_entry = false;
+                    app.save();
+                }
+            });
+        });
+    }
 
     ui.on_check_updates(|| check_updates(true));
     ui.on_download_update(download_update);
@@ -475,8 +501,10 @@ fn main() -> Result<(), slint::PlatformError> {
     // after the app_id. Must be set after the platform exists but before the window shows.
     #[cfg(target_os = "linux")]
     {
-        desktop::integrate();
         slint::set_xdg_app_id(desktop::APP_ID)?;
+        let state = desktop::state();
+        ui.set_desktop_state(state);
+        ui.set_desktop_prompt(state == desktop::MISSING && cfg.ask_desktop_entry && !desktop::has_appimagelauncher());
     }
     let tray = create_tray()?;
     let records = Rc::new(VecModel::<RecordData>::default());

@@ -35,7 +35,7 @@ src/audio/windows.rs  WASAPI sessions of all active render devices, grouped by e
 src/audio/linux.rs    PulseAudio/PipeWire sink inputs + connected clients, grouped by `application.process.binary`
 src/audio/macos.rs    Process taps + private aggregate device + IO proc that applies gain
 src/autostart.rs      Registry Run key / XDG autostart / LaunchAgent, always with `--minimized`
-src/desktop.rs        Linux app_id; AppImage self-registers its .desktop + icon (Wayland icon lookup)
+src/desktop.rs        Linux app_id; AppImage menu entry + icon (prompt / Settings), respects AppImageLauncher entries
 src/tray.rs           Tray wrapper: Slint TrayIcon (Win/macOS) or ksni on a background thread (Linux)
 src/instance.rs       Single instance via loopback TCP 127.0.0.1:47613 ("show" message)
 src/updater.rs        Check / download / verify / swap binary and relaunch

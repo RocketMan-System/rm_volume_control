@@ -6,3 +6,4 @@ Exec=apps-volume-control
 Icon=apps-volume-control
 Categories=AudioVideo;Audio;Utility;
 Terminal=false
+StartupWMClass=apps-volume-control

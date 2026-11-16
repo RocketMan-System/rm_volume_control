@@ -139,6 +139,28 @@ translations! {
     set_set_autostart => ["Start with system", "Запускати разом із системою", "Запускать вместе с системой"],
     set_set_start_minimized => ["Start minimized to tray", "Запускати згорнутим у трей", "Запускать свёрнутым в трей"],
     set_set_auto_update => ["Check for updates automatically", "Автоматично перевіряти оновлення", "Автоматически проверять обновления"],
+    set_desktop_title => ["Application menu", "Меню застосунків", "Меню приложений"],
+    set_desktop_missing => [
+        "Not added to the application menu: no menu entry, and the taskbar may show a generic icon",
+        "Не додано до меню застосунків: немає пункту в меню, а панель завдань може показувати стандартну іконку",
+        "Не добавлено в меню приложений: нет пункта в меню, а панель задач может показывать стандартную иконку"
+    ],
+    set_desktop_ours => ["Added to the application menu", "Додано до меню застосунків", "Добавлено в меню приложений"],
+    set_desktop_other => [
+        "Added to the application menu by another tool (e.g. AppImageLauncher)",
+        "Додано до меню застосунків іншою програмою (наприклад, AppImageLauncher)",
+        "Добавлено в меню приложений другой программой (например, AppImageLauncher)"
+    ],
+    set_desktop_add => ["Add to menu", "Додати до меню", "Добавить в меню"],
+    set_desktop_remove => ["Remove from menu", "Прибрати з меню", "Убрать из меню"],
+    set_desktop_prompt_title => ["Add to the application menu?", "Додати до меню застосунків?", "Добавить в меню приложений?"],
+    set_desktop_prompt_text => [
+        "Apps Volume Control is running as an AppImage and is not in the application menu yet. Add it so it can be started from the menu and shows its own icon in the taskbar.",
+        "Apps Volume Control запущено як AppImage, і його ще немає в меню застосунків. Додайте його, щоб запускати з меню й бачити власну іконку на панелі завдань.",
+        "Apps Volume Control запущен как AppImage, и его ещё нет в меню приложений. Добавьте его, чтобы запускать из меню и видеть собственную иконку на панели задач."
+    ],
+    set_desktop_prompt_later => ["Not now", "Не зараз", "Не сейчас"],
+    set_desktop_dont_ask => ["Don't ask again", "Більше не питати", "Больше не спрашивать"],
     set_hotkeys_unavailable => [
         "Global hotkeys are unavailable in this session",
         "Глобальні гарячі клавіші недоступні в цьому сеансі",

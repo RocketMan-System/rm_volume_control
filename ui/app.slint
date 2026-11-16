@@ -1,4 +1,4 @@
-import { Button, Switch, Slider, ComboBox, LineEdit, ScrollView, Palette, ProgressIndicator } from "std-widgets.slint";
+import { Button, CheckBox, Switch, Slider, ComboBox, LineEdit, ScrollView, Palette, ProgressIndicator } from "std-widgets.slint";
 
 export struct RecordData {
     id: string,
@@ -65,6 +65,16 @@ export global Tr {
     in property <string> set-autostart: "Start with system";
     in property <string> set-start-minimized: "Start minimized to tray";
     in property <string> set-auto-update: "Check for updates automatically";
+    in property <string> desktop-title: "Application menu";
+    in property <string> desktop-missing: "Not added to the application menu";
+    in property <string> desktop-ours: "Added to the application menu";
+    in property <string> desktop-other: "Added to the application menu by another tool";
+    in property <string> desktop-add: "Add to menu";
+    in property <string> desktop-remove: "Remove from menu";
+    in property <string> desktop-prompt-title: "Add to the application menu?";
+    in property <string> desktop-prompt-text: "";
+    in property <string> desktop-prompt-later: "Not now";
+    in property <string> desktop-dont-ask: "Don't ask again";
     in property <string> hotkeys-unavailable: "Global hotkeys are unavailable in this session";
     in property <string> audio-unavailable: "Audio backend is unavailable";
     in property <string> about-text: "Control the volume of individual applications with global hotkeys.";
@@ -424,6 +434,9 @@ export component AppWindow inherits Window {
     in-out property <bool> autostart;
     in-out property <bool> start-minimized;
     in-out property <bool> auto-update;
+    // Linux AppImage menu entry (src/desktop.rs): 0 n/a, 1 missing, 2 ours, 3 another tool's
+    in property <int> desktop-state;
+    in-out property <bool> desktop-prompt;
 
     always-on-top: root.on-top;
 
@@ -450,6 +463,9 @@ export component AppWindow inherits Window {
     callback theme-changed(int);
     callback settings-changed();
     callback open-url(string);
+    callback desktop-register();
+    callback desktop-unregister();
+    callback desktop-prompt-answer(bool, bool);
 
     changed theme-index => { self.apply-theme(); }
     init => { self.apply-theme(); }
@@ -692,6 +708,37 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
+                if root.desktop-state != 0: Card {
+                    HorizontalLayout {
+                        padding: 14px;
+                        spacing: 10px;
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            Text { text: Tr.desktop-title; }
+                            Text {
+                                text: root.desktop-state == 1 ? Tr.desktop-missing : (root.desktop-state == 2 ? Tr.desktop-ours : Tr.desktop-other);
+                                font-size: 11px;
+                                wrap: word-wrap;
+                                color: Palette.foreground.with-alpha(0.6);
+                            }
+                        }
+                        if root.desktop-state == 1: VerticalLayout {
+                            alignment: center;
+                            Button {
+                                text: Tr.desktop-add;
+                                clicked => { root.desktop-register(); }
+                            }
+                        }
+                        if root.desktop-state == 2: VerticalLayout {
+                            alignment: center;
+                            Button {
+                                text: Tr.desktop-remove;
+                                clicked => { root.desktop-unregister(); }
+                            }
+                        }
+                    }
+                }
                 Card {
                     HorizontalLayout {
                         padding: 14px;
@@ -753,6 +800,37 @@ export component AppWindow inherits Window {
                             font-size: 11px;
                             color: Palette.foreground.with-alpha(0.5);
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // First-start question of an AppImage, shown over the whole window.
+    if root.desktop-prompt: Rectangle {
+        background: #00000080;
+        TouchArea {}
+        Card {
+            width: min(parent.width - 40px, 440px);
+            height: self.preferred-height;
+            background: Palette.background;
+            VerticalLayout {
+                padding: 18px;
+                spacing: 12px;
+                Text { text: Tr.desktop-prompt-title; font-size: 15px; font-weight: 700; wrap: word-wrap; }
+                Text { text: Tr.desktop-prompt-text; wrap: word-wrap; }
+                dont-ask := CheckBox { text: Tr.desktop-dont-ask; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    Button {
+                        text: Tr.desktop-prompt-later;
+                        clicked => { root.desktop-prompt-answer(false, dont-ask.checked); }
+                    }
+                    Button {
+                        text: Tr.desktop-add;
+                        primary: true;
+                        clicked => { root.desktop-prompt-answer(true, dont-ask.checked); }
                     }
                 }
             }

@@ -28,7 +28,7 @@ curl -fsSL https://github.com/RocketMan-System/rm_volume_control/releases/latest
 ```
 
 or download `apps-volume-control-linux-x86_64.AppImage` (or the bare `apps-volume-control-linux-x86_64`),
-`chmod +x` it and run. The AppImage adds itself to the application menu on first start.
+`chmod +x` it and run. On first start the AppImage offers to add itself to the application menu (also in Settings).
 Global hotkeys need an X11 session (or XWayland apps focused).
 
 Checksums of all files are in `SHA256SUMS.txt`.
