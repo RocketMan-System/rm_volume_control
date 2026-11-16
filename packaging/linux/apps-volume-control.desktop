@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Apps Volume Control
+Comment=Control applications volume by hotkeys
+Exec=apps-volume-control
+Icon=apps-volume-control
+Categories=AudioVideo;Audio;Utility;
+Terminal=false

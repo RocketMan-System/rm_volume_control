@@ -1,0 +1,780 @@
+import { Button, Switch, Slider, ComboBox, LineEdit, ScrollView, Palette, ProgressIndicator } from "std-widgets.slint";
+
+export struct RecordData {
+    id: string,
+    name: string,
+    process: string,
+    process-title: string,
+    running: bool,
+    hotkey: string,
+    hotkey-error: bool,
+    min: int,
+    max: int,
+    enabled: bool,
+    volume: int,
+}
+
+// All UI strings; filled from Rust (src/i18n.rs) whenever the language changes.
+export global Tr {
+    in property <string> new-record: "New record";
+    in property <string> new-record-desc: "Create new controller";
+    in property <string> settings: "Settings";
+    in property <string> about: "About";
+    in property <string> back: "Back";
+    in property <string> empty-data: "No records yet. Create one to start controlling app volume.";
+    in property <string> empty-name: "Unnamed";
+    in property <string> no-process: "No process selected";
+    in property <string> process-closed: "not running";
+    in property <string> process-idle: "silent";
+    in property <string> no-hotkey: "No hotkey";
+    in property <string> hotkey-busy: "Hotkey is used by another app";
+    in property <string> edit: "Edit";
+    in property <string> close: "Close";
+    in property <string> remove: "Remove";
+    in property <string> remove-confirm: "Remove this record?";
+    in property <string> remove-yes: "Yes, remove";
+    in property <string> remove-no: "Cancel";
+    in property <string> toggle: "Toggle";
+    in property <string> toggle-desc: "Switch between minimum and maximum volume now";
+    in property <string> field-name: "Name";
+    in property <string> field-process: "Process";
+    in property <string> field-refresh: "Refresh";
+    in property <string> field-hotkey: "Hotkey";
+    in property <string> hotkey-record: "Record";
+    in property <string> hotkey-press: "Press a key combination…";
+    in property <string> hotkey-clear: "Clear";
+    in property <string> field-min: "Minimum volume";
+    in property <string> field-max: "Maximum volume";
+    in property <string> update-available: "Update available";
+    in property <string> update-download: "Download";
+    in property <string> update-downloading: "Downloading…";
+    in property <string> update-install: "Install and restart";
+    in property <string> update-error: "Update failed";
+    in property <string> update-open-page: "Open release page";
+    in property <string> update-check: "Check for updates";
+    in property <string> update-checking: "Checking…";
+    in property <string> update-latest: "You have the latest version";
+    in property <string> set-language: "Language";
+    in property <string> set-theme: "Theme";
+    in property <string> theme-system: "System";
+    in property <string> theme-dark: "Dark";
+    in property <string> theme-light: "Light";
+    in property <string> set-on-top: "Always on top";
+    in property <string> set-close-to-tray: "Close to tray";
+    in property <string> set-close-to-tray-desc: "Keep running in the tray when the window is closed";
+    in property <string> set-autostart: "Start with system";
+    in property <string> set-start-minimized: "Start minimized to tray";
+    in property <string> set-auto-update: "Check for updates automatically";
+    in property <string> hotkeys-unavailable: "Global hotkeys are unavailable in this session";
+    in property <string> audio-unavailable: "Audio backend is unavailable";
+    in property <string> about-text: "Control the volume of individual applications with global hotkeys.";
+    in property <string> about-dev: "Website";
+    in property <string> about-project: "Source code";
+    in property <string> tray-show: "Show window";
+    in property <string> tray-quit: "Quit";
+}
+
+component Card inherits Rectangle {
+    background: Palette.alternate-background;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Palette.border;
+}
+
+component Chip inherits Rectangle {
+    in property <string> text;
+    in property <color> tint: Palette.accent-background;
+    border-radius: 4px;
+    background: self.tint.with-alpha(0.18);
+    border-width: 1px;
+    border-color: self.tint.with-alpha(0.5);
+    height: 22px;
+    HorizontalLayout {
+        padding-left: 7px;
+        padding-right: 7px;
+        Text {
+            text: root.text;
+            color: Palette.foreground;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component FieldRow inherits HorizontalLayout {
+    in property <string> label;
+    spacing: 10px;
+    alignment: stretch;
+    Text {
+        text: root.label;
+        width: 130px;
+        vertical-alignment: center;
+        color: Palette.foreground.with-alpha(0.7);
+        overflow: elide;
+    }
+    @children
+}
+
+component SettingSwitch inherits HorizontalLayout {
+    in property <string> text;
+    in property <string> description;
+    in-out property <bool> checked;
+    callback toggled(bool);
+    spacing: 12px;
+    VerticalLayout {
+        alignment: center;
+        horizontal-stretch: 1;
+        Text { text: root.text; wrap: word-wrap; }
+        if root.description != "": Text {
+            text: root.description;
+            font-size: 11px;
+            wrap: word-wrap;
+            color: Palette.foreground.with-alpha(0.6);
+        }
+    }
+    Switch {
+        checked <=> root.checked;
+        toggled => { root.toggled(self.checked); }
+    }
+}
+
+component HotkeyRecorder inherits Rectangle {
+    in property <string> value;
+    out property <bool> recording: fs.has-focus;
+    callback captured(string, bool, bool, bool, bool) -> bool;
+    callback cleared();
+    height: 32px;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: root.recording ? Palette.accent-background : Palette.border;
+    background: Palette.control-background;
+    fs := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                self.clear-focus();
+                return accept;
+            }
+            if (root.captured(event.text, event.modifiers.control, event.modifiers.alt, event.modifiers.shift, event.modifiers.meta)) {
+                self.clear-focus();
+            }
+            accept
+        }
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        spacing: 6px;
+        Text {
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            text: root.recording ? Tr.hotkey-press : (root.value != "" ? root.value : Tr.no-hotkey);
+            color: root.recording ? Palette.accent-background : Palette.foreground;
+            overflow: elide;
+        }
+        Button {
+            text: Tr.hotkey-record;
+            clicked => { fs.focus(); }
+        }
+        Button {
+            text: Tr.hotkey-clear;
+            enabled: root.value != "";
+            clicked => { root.cleared(); }
+        }
+    }
+}
+
+component RecordCard inherits Card {
+    in property <RecordData> data;
+    in property <int> index;
+    in property <bool> editing;
+    in property <bool> confirm-remove;
+    in property <[string]> process-labels;
+    in property <int> process-index;
+
+    callback toggle-edit();
+    callback ask-remove(bool);
+    callback remove();
+    callback set-enabled(bool);
+    callback set-volume(int);
+    callback toggle-now();
+    callback set-name(string);
+    callback set-process(int);
+    callback refresh-processes();
+    callback hotkey-captured(string, bool, bool, bool, bool) -> bool;
+    callback hotkey-cleared();
+    callback set-min(int);
+    callback set-max(int);
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        HorizontalLayout {
+            spacing: 10px;
+            Switch {
+                checked: root.data.enabled;
+                toggled => { root.set-enabled(self.checked); }
+            }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                Text {
+                    text: "#\{root.index + 1}  " + (root.data.name != "" ? root.data.name : Tr.empty-name);
+                    font-size: 15px;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.data.process == "" ? Tr.no-process
+                        : !root.data.running ? root.data.process + " · " + Tr.process-closed
+                        : root.data.volume < 0 ? root.data.process-title + " · " + Tr.process-idle
+                        : root.data.process-title;
+                    font-size: 12px;
+                    color: root.data.running ? Palette.foreground.with-alpha(0.65) : #e0a030;
+                    overflow: elide;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Chip {
+                    text: root.data.hotkey != "" ? root.data.hotkey : Tr.no-hotkey;
+                    tint: root.data.hotkey-error ? #e05050 : (root.data.hotkey != "" ? Palette.accent-background : #808080);
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Chip {
+                    text: root.data.volume >= 0 ? "\{root.data.volume}%" : "—";
+                    tint: #3aa676;
+                }
+            }
+        }
+
+        if root.data.hotkey-error: Text {
+            text: Tr.hotkey-busy;
+            font-size: 11px;
+            color: #e05050;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: "\{root.data.min}%";
+                vertical-alignment: center;
+                font-size: 11px;
+                color: Palette.foreground.with-alpha(0.6);
+            }
+            Slider {
+                horizontal-stretch: 1;
+                minimum: 0;
+                maximum: 100;
+                step: 1;
+                enabled: root.data.volume >= 0;
+                value: root.data.volume < 0 ? 0 : root.data.volume;
+                changed(v) => { root.set-volume(round(v)); }
+            }
+            Text {
+                text: "\{root.data.max}%";
+                vertical-alignment: center;
+                font-size: 11px;
+                color: Palette.foreground.with-alpha(0.6);
+            }
+        }
+
+        if !root.confirm-remove: HorizontalLayout {
+            spacing: 6px;
+            alignment: end;
+            Button {
+                text: Tr.toggle;
+                enabled: root.data.running;
+                clicked => { root.toggle-now(); }
+            }
+            Button {
+                text: root.editing ? Tr.close : Tr.edit;
+                primary: root.editing;
+                clicked => { root.toggle-edit(); }
+            }
+            Button {
+                text: Tr.remove;
+                clicked => { root.ask-remove(true); }
+            }
+        }
+        if root.confirm-remove: HorizontalLayout {
+            spacing: 6px;
+            alignment: end;
+            Text {
+                text: Tr.remove-confirm;
+                vertical-alignment: center;
+                color: #e05050;
+            }
+            Button {
+                text: Tr.remove-yes;
+                clicked => { root.remove(); }
+            }
+            Button {
+                text: Tr.remove-no;
+                clicked => { root.ask-remove(false); }
+            }
+        }
+
+        if root.editing: Rectangle {
+            height: 1px;
+            background: Palette.border;
+        }
+        if root.editing: VerticalLayout {
+            spacing: 8px;
+            FieldRow {
+                label: Tr.field-name;
+                LineEdit {
+                    text: root.data.name;
+                    placeholder-text: Tr.empty-name;
+                    edited(t) => { root.set-name(t); }
+                }
+            }
+            FieldRow {
+                label: Tr.field-process;
+                ComboBox {
+                    horizontal-stretch: 1;
+                    model: root.process-labels;
+                    current-index: root.process-index;
+                    selected => { root.set-process(self.current-index); }
+                }
+                Button {
+                    text: Tr.field-refresh;
+                    clicked => { root.refresh-processes(); }
+                }
+            }
+            FieldRow {
+                label: Tr.field-hotkey;
+                HotkeyRecorder {
+                    horizontal-stretch: 1;
+                    value: root.data.hotkey;
+                    captured(t, c, a, s, m) => { return root.hotkey-captured(t, c, a, s, m); }
+                    cleared => { root.hotkey-cleared(); }
+                }
+            }
+            FieldRow {
+                label: Tr.field-min;
+                Slider {
+                    horizontal-stretch: 1;
+                    minimum: 0;
+                    maximum: 100;
+                    step: 1;
+                    value: root.data.min;
+                    released(v) => { root.set-min(round(v)); }
+                }
+                Text {
+                    width: 40px;
+                    text: "\{root.data.min}%";
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                }
+            }
+            FieldRow {
+                label: Tr.field-max;
+                Slider {
+                    horizontal-stretch: 1;
+                    minimum: 0;
+                    maximum: 100;
+                    step: 1;
+                    value: root.data.max;
+                    released(v) => { root.set-max(round(v)); }
+                }
+                Text {
+                    width: 40px;
+                    text: "\{root.data.max}%";
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                }
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "Apps Volume Control";
+    icon: @image-url("../assets/icon256.png");
+    preferred-width: 620px;
+    preferred-height: 520px;
+    min-width: 460px;
+    min-height: 340px;
+    background: Palette.background;
+    default-font-size: 13px;
+
+    in property <string> version;
+    in property <[RecordData]> records;
+    in-out property <string> editing-id;
+    in-out property <string> remove-id;
+    in property <[string]> process-labels;
+    in property <int> process-index;
+    in property <string> status-message;
+    // 0 = records, 1 = settings, 2 = about
+    in-out property <int> page;
+
+    // updater: 0 none, 1 available, 2 downloading, 3 ready, 4 error
+    in property <int> update-state;
+    in property <string> update-version;
+    in property <float> update-progress;
+    in property <string> update-check-status;
+
+    in-out property <int> language-index;
+    in property <[string]> language-names;
+    in-out property <int> theme-index;
+    in-out property <bool> on-top;
+    in-out property <bool> close-to-tray;
+    in-out property <bool> autostart;
+    in-out property <bool> start-minimized;
+    in-out property <bool> auto-update;
+
+    always-on-top: root.on-top;
+
+    callback add-record();
+    callback begin-edit(string);
+    callback remove-record(string);
+    callback set-enabled(string, bool);
+    callback set-volume(string, int);
+    callback toggle-now(string);
+    callback set-name(string, string);
+    callback set-process(string, int);
+    callback refresh-processes();
+    callback hotkey-captured(string, string, bool, bool, bool, bool) -> bool;
+    callback hotkey-cleared(string);
+    callback set-min(string, int);
+    callback set-max(string, int);
+
+    callback download-update();
+    callback install-update();
+    callback open-release-page();
+    callback check-updates();
+
+    callback language-changed(int);
+    callback theme-changed(int);
+    callback settings-changed();
+    callback open-url(string);
+
+    changed theme-index => { self.apply-theme(); }
+    init => { self.apply-theme(); }
+
+    function apply-theme() {
+        Palette.color-scheme = root.theme-index == 1 ? ColorScheme.dark : (root.theme-index == 2 ? ColorScheme.light : ColorScheme.unknown);
+    }
+
+    VerticalLayout {
+        // Header
+        Rectangle {
+            background: Palette.alternate-background;
+            height: 52px;
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 10px;
+                spacing: 8px;
+                Image {
+                    source: @image-url("../assets/64x64.png");
+                    width: 28px;
+                    height: 28px;
+                    y: (parent.height - self.height) / 2;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: root.page == 0 ? "Apps Volume Control" : (root.page == 1 ? Tr.settings : Tr.about);
+                        font-size: 16px;
+                        font-weight: 700;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: "v" + root.version;
+                        font-size: 11px;
+                        color: Palette.foreground.with-alpha(0.55);
+                    }
+                }
+                if root.page == 0: VerticalLayout {
+                    alignment: center;
+                    Button {
+                        text: "+ " + Tr.new-record;
+                        primary: true;
+                        clicked => { root.add-record(); }
+                    }
+                }
+                if root.page == 0: VerticalLayout {
+                    alignment: center;
+                    Button {
+                        text: Tr.settings;
+                        clicked => { root.page = 1; }
+                    }
+                }
+                if root.page == 0: VerticalLayout {
+                    alignment: center;
+                    Button {
+                        text: "?";
+                        clicked => { root.page = 2; }
+                    }
+                }
+                if root.page != 0: VerticalLayout {
+                    alignment: center;
+                    Button {
+                        text: "← " + Tr.back;
+                        clicked => { root.page = 0; }
+                    }
+                }
+            }
+        }
+        Rectangle { height: 1px; background: Palette.border; }
+
+        // Update banner
+        if root.update-state != 0: Rectangle {
+            background: root.update-state == 4 ? #e0505030 : Palette.accent-background.with-alpha(0.15);
+            HorizontalLayout {
+                padding: 8px;
+                padding-left: 14px;
+                spacing: 8px;
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    Text {
+                        text: root.update-state == 4 ? Tr.update-error : Tr.update-available + ": v" + root.update-version;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+                    if root.update-state == 2: ProgressIndicator {
+                        progress: root.update-progress;
+                        height: 6px;
+                    }
+                }
+                if root.update-state == 1: Button {
+                    text: Tr.update-download;
+                    primary: true;
+                    clicked => { root.download-update(); }
+                }
+                if root.update-state == 2: Text {
+                    text: "\{round(root.update-progress * 100)}%";
+                    vertical-alignment: center;
+                }
+                if root.update-state == 3: Button {
+                    text: Tr.update-install;
+                    primary: true;
+                    clicked => { root.install-update(); }
+                }
+                if root.update-state == 4 || root.update-state == 1: Button {
+                    text: Tr.update-open-page;
+                    clicked => { root.open-release-page(); }
+                }
+            }
+        }
+
+        if root.status-message != "": Rectangle {
+            background: #e0a03030;
+            HorizontalLayout {
+                padding: 6px;
+                padding-left: 14px;
+                Text {
+                    text: root.status-message;
+                    wrap: word-wrap;
+                    font-size: 12px;
+                }
+            }
+        }
+
+        // Records page
+        if root.page == 0: ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: 12px;
+                spacing: 10px;
+                alignment: start;
+                if root.records.length == 0: Card {
+                    height: 90px;
+                    Text {
+                        text: Tr.empty-data;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: parent.width - 30px;
+                        color: Palette.foreground.with-alpha(0.7);
+                    }
+                }
+                for rec[i] in root.records: RecordCard {
+                    data: rec;
+                    index: i;
+                    editing: root.editing-id == rec.id;
+                    confirm-remove: root.remove-id == rec.id;
+                    process-labels: root.process-labels;
+                    process-index: root.process-index;
+                    toggle-edit => {
+                        if (root.editing-id == rec.id) {
+                            root.editing-id = "";
+                        } else {
+                            root.editing-id = rec.id;
+                            root.begin-edit(rec.id);
+                        }
+                    }
+                    ask-remove(v) => { root.remove-id = v ? rec.id : ""; }
+                    remove => {
+                        root.remove-id = "";
+                        if (root.editing-id == rec.id) { root.editing-id = ""; }
+                        root.remove-record(rec.id);
+                    }
+                    set-enabled(v) => { root.set-enabled(rec.id, v); }
+                    set-volume(v) => { root.set-volume(rec.id, v); }
+                    toggle-now => { root.toggle-now(rec.id); }
+                    set-name(v) => { root.set-name(rec.id, v); }
+                    set-process(v) => { root.set-process(rec.id, v); }
+                    refresh-processes => { root.refresh-processes(); root.begin-edit(rec.id); }
+                    hotkey-captured(t, c, a, s, m) => { return root.hotkey-captured(rec.id, t, c, a, s, m); }
+                    hotkey-cleared => { root.hotkey-cleared(rec.id); }
+                    set-min(v) => { root.set-min(rec.id, v); }
+                    set-max(v) => { root.set-max(rec.id, v); }
+                }
+            }
+        }
+
+        // Settings page
+        if root.page == 1: ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: 12px;
+                spacing: 10px;
+                alignment: start;
+                Card {
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 12px;
+                        FieldRow {
+                            label: Tr.set-language;
+                            ComboBox {
+                                horizontal-stretch: 1;
+                                model: root.language-names;
+                                current-index <=> root.language-index;
+                                selected => { root.language-changed(self.current-index); }
+                            }
+                        }
+                        FieldRow {
+                            label: Tr.set-theme;
+                            ComboBox {
+                                horizontal-stretch: 1;
+                                model: [Tr.theme-system, Tr.theme-dark, Tr.theme-light];
+                                current-index <=> root.theme-index;
+                                selected => { root.theme-changed(self.current-index); }
+                            }
+                        }
+                    }
+                }
+                Card {
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 12px;
+                        SettingSwitch {
+                            text: Tr.set-on-top;
+                            checked <=> root.on-top;
+                            toggled => { root.settings-changed(); }
+                        }
+                        SettingSwitch {
+                            text: Tr.set-close-to-tray;
+                            description: Tr.set-close-to-tray-desc;
+                            checked <=> root.close-to-tray;
+                            toggled => { root.settings-changed(); }
+                        }
+                        SettingSwitch {
+                            text: Tr.set-autostart;
+                            checked <=> root.autostart;
+                            toggled => { root.settings-changed(); }
+                        }
+                        SettingSwitch {
+                            text: Tr.set-start-minimized;
+                            checked <=> root.start-minimized;
+                            toggled => { root.settings-changed(); }
+                        }
+                        SettingSwitch {
+                            text: Tr.set-auto-update;
+                            checked <=> root.auto-update;
+                            toggled => { root.settings-changed(); }
+                        }
+                    }
+                }
+                Card {
+                    HorizontalLayout {
+                        padding: 14px;
+                        spacing: 10px;
+                        Text {
+                            text: root.update-check-status;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            wrap: word-wrap;
+                        }
+                        Button {
+                            text: Tr.update-check;
+                            clicked => { root.check-updates(); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // About page
+        if root.page == 2: ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: 12px;
+                spacing: 10px;
+                alignment: start;
+                Card {
+                    VerticalLayout {
+                        padding: 18px;
+                        spacing: 12px;
+                        HorizontalLayout {
+                            spacing: 14px;
+                            Image {
+                                source: @image-url("../assets/icon256.png");
+                                width: 72px;
+                                height: 72px;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Text { text: "Apps Volume Control"; font-size: 18px; font-weight: 700; }
+                                Text { text: "v" + root.version + "  ·  rocketman-streams.com"; color: Palette.foreground.with-alpha(0.6); }
+                            }
+                        }
+                        Text { text: Tr.about-text; wrap: word-wrap; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            Button {
+                                text: Tr.about-dev;
+                                clicked => { root.open-url("https://rocketman-streams.com/"); }
+                            }
+                            Button {
+                                text: Tr.about-project;
+                                clicked => { root.open-url("https://github.com/RocketMan-System/rm_volume_control"); }
+                            }
+                        }
+                        Text {
+                            text: "PolyForm Noncommercial 1.0.0  ·  UI: Slint";
+                            font-size: 11px;
+                            color: Palette.foreground.with-alpha(0.5);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component TrayIcon inherits SystemTrayIcon {
+    icon: @image-url("../assets/64x64.png");
+    tooltip: "Apps Volume Control";
+    title: "Apps Volume Control";
+    callback show-window();
+    callback quit-app();
+    clicked => { root.show-window(); }
+    Menu {
+        MenuItem {
+            title: Tr.tray-show;
+            activated => { root.show-window(); }
+        }
+        MenuItem {
+            title: Tr.tray-quit;
+            activated => { root.quit-app(); }
+        }
+    }
+}

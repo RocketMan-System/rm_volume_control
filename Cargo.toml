@@ -1,0 +1,66 @@
+[package]
+name = "apps-volume-control"
+version = "1.0.0"
+description = "Control applications volume by hotkeys"
+authors = ["RocketMan"]
+license = "PolyForm-Noncommercial-1.0.0"
+homepage = "https://rocketman-streams.com/"
+repository = "https://github.com/RocketMan-System/rm_volume_control"
+edition = "2021"
+rust-version = "1.88"
+
+[dependencies]
+slint = { version = "1.19", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "accessibility"] }
+global-hotkey = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "3", default-features = false, features = ["json"] }
+sha2 = "0.10"
+dirs = "6"
+
+# Native tray through Slint (Linux uses its own, see src/tray.rs).
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+slint = { version = "1.19", default-features = false, features = ["system-tray"] }
+
+# HTTPS: the OS TLS stack on Windows/macOS, rustls on Linux (no OpenSSL version coupling).
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+# Own StatusNotifierItem tray in a background thread: Slint's tray registers on D-Bus
+# synchronously on the UI thread and can stall startup while the tray host answers.
+ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
+png = "0.18"
+libpulse-binding = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-core-audio = "0.3"
+objc2-core-audio-types = "0.3"
+objc2-core-foundation = "0.3"
+libc = "0.2"
+
+[build-dependencies]
+slint-build = "1.19"
+winresource = "0.1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

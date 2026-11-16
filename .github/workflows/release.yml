@@ -1,0 +1,149 @@
+name: Build & Release
+
+# Every push to main is tested. When the version in Cargo.toml has no release yet,
+# binaries for all platforms are built and published as release v<version>.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          elif gh release view "v$version" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release v$version already exists, nothing to publish"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release v$version not found, it will be built"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libpulse-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked
+
+  build:
+    needs: [version, test]
+    if: needs.version.outputs.release == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+          - os: ubuntu-22.04
+            name: linux
+          - os: macos-latest
+            name: macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libpulse-dev libfontconfig1-dev libxcb1-dev libxkbcommon-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo build --release --locked
+          mkdir dist
+          cp target/release/apps-volume-control.exe dist/apps-volume-control-windows-x86_64.exe
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --release --locked
+          mkdir dist
+          cp target/release/apps-volume-control dist/apps-volume-control-linux-x86_64
+          cp packaging/linux/apps-volume-control.desktop dist/
+          cp assets/icon256.png dist/apps-volume-control.png
+          cp scripts/install-linux.sh dist/
+
+      - name: Build (macOS universal)
+        if: runner.os == 'macOS'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '14.2'
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          APP="dist/Apps Volume Control.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          lipo -create -output "$APP/Contents/MacOS/apps-volume-control" \
+            target/aarch64-apple-darwin/release/apps-volume-control \
+            target/x86_64-apple-darwin/release/apps-volume-control
+          sed "s/__VERSION__/${{ needs.version.outputs.version }}/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
+          cp assets/icon.icns "$APP/Contents/Resources/icon.icns"
+          # No Developer ID: ad-hoc signature so Apple Silicon accepts the universal binary.
+          codesign --force --deep --sign - "$APP"
+          (cd dist && ditto -c -k --keepParent "Apps Volume Control.app" apps-volume-control-macos-universal.zip)
+          rm -rf "$APP"
+          cp scripts/install-macos.sh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v${{ needs.version.outputs.version }}"
+          gh release create "$tag" dist/* \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "Apps Volume Control $tag" \
+            --notes-file .github/release-notes.md \
+            --generate-notes
