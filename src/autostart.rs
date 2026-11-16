@@ -6,6 +6,11 @@ use std::path::PathBuf;
 pub const MINIMIZED_ARG: &str = "--minimized";
 
 fn exe() -> Option<PathBuf> {
+    // Inside an AppImage current_exe() is the temporary mount, gone after exit.
+    #[cfg(target_os = "linux")]
+    if let Some(image) = crate::desktop::appimage() {
+        return Some(image);
+    }
     std::env::current_exe().ok()
 }
 

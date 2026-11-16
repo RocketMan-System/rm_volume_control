@@ -5,6 +5,8 @@ slint::include_modules!();
 mod audio;
 mod autostart;
 mod config;
+#[cfg(target_os = "linux")]
+mod desktop;
 mod hotkeys;
 mod i18n;
 mod instance;
@@ -469,6 +471,13 @@ fn main() -> Result<(), slint::PlatformError> {
     let start_hidden = args.iter().any(|a| a == autostart::MINIMIZED_ARG) || cfg.start_minimized;
 
     let ui = AppWindow::new()?;
+    // Wayland has no per-window icon: the shell takes it from the .desktop file named
+    // after the app_id. Must be set after the platform exists but before the window shows.
+    #[cfg(target_os = "linux")]
+    {
+        desktop::integrate();
+        slint::set_xdg_app_id(desktop::APP_ID)?;
+    }
     let tray = create_tray()?;
     let records = Rc::new(VecModel::<RecordData>::default());
     ui.set_records(ModelRc::from(records.clone()));

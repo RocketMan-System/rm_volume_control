@@ -99,6 +99,22 @@ jobs:
           cp assets/icon256.png dist/apps-volume-control.png
           cp scripts/install-linux.sh dist/
 
+      - name: AppImage (Linux)
+        if: runner.os == 'Linux'
+        env:
+          # The runner has no FUSE: let appimagetool unpack itself instead of mounting.
+          APPIMAGE_EXTRACT_AND_RUN: 1
+          ARCH: x86_64
+        run: |
+          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          mkdir -p AppDir/usr/bin
+          cp target/release/apps-volume-control AppDir/usr/bin/
+          cp packaging/linux/apps-volume-control.desktop AppDir/
+          cp assets/icon256.png AppDir/apps-volume-control.png
+          ln -s usr/bin/apps-volume-control AppDir/AppRun
+          ./appimagetool AppDir dist/apps-volume-control-linux-x86_64.AppImage
+
       - name: Build (macOS universal)
         if: runner.os == 'macOS'
         env:

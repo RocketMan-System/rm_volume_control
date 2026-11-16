@@ -37,7 +37,7 @@ See the notes of the [latest release](https://github.com/RocketMan-System/rm_vol
 |---|---|
 | Windows 10/11 | Download `apps-volume-control-windows-x86_64.exe` and run it (portable, no admin rights). |
 | macOS 14.2+ | `curl -fsSL https://github.com/RocketMan-System/rm_volume_control/releases/latest/download/install-macos.sh \| sh` |
-| Linux | `curl -fsSL https://github.com/RocketMan-System/rm_volume_control/releases/latest/download/install-linux.sh \| sh` |
+| Linux | `curl -fsSL https://github.com/RocketMan-System/rm_volume_control/releases/latest/download/install-linux.sh \| sh` or `apps-volume-control-linux-x86_64.AppImage` |
 
 ### Platform notes
 

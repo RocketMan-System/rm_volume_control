@@ -37,7 +37,7 @@
 |---|---|
 | Windows 10/11 | Скачайте `apps-volume-control-windows-x86_64.exe` и запустите (портативная версия, права администратора не нужны). |
 | macOS 14.2+ | `curl -fsSL https://github.com/RocketMan-System/rm_volume_control/releases/latest/download/install-macos.sh \| sh` |
-| Linux | `curl -fsSL https://github.com/RocketMan-System/rm_volume_control/releases/latest/download/install-linux.sh \| sh` |
+| Linux | `curl -fsSL https://github.com/RocketMan-System/rm_volume_control/releases/latest/download/install-linux.sh \| sh` или `apps-volume-control-linux-x86_64.AppImage` |
 
 ### Особенности платформ
 

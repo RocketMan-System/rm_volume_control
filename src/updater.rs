@@ -1,6 +1,6 @@
 //! Self-updater backed by GitHub Releases.
 //!
-//! Every release carries one asset per platform (see [`ASSET_NAME`]) and a
+//! Every release carries one asset per platform (see [`ASSET_NAME`], plus an AppImage on Linux) and a
 //! `SHA256SUMS.txt`. The new binary is downloaded next to the temp dir, verified,
 //! swapped with the running one, and the app restarts itself.
 
@@ -25,6 +25,19 @@ pub const ASSET_NAME: &str = "apps-volume-control-linux-x86_64";
 pub const ASSET_NAME: &str = "apps-volume-control-linux-aarch64";
 #[cfg(target_os = "macos")]
 pub const ASSET_NAME: &str = "apps-volume-control-macos-universal.zip";
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const APPIMAGE_ASSET: &str = "apps-volume-control-linux-x86_64.AppImage";
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const APPIMAGE_ASSET: &str = "apps-volume-control-linux-aarch64.AppImage";
+
+/// The asset this copy updates from: an AppImage is replaced by the AppImage asset.
+fn asset_name() -> &'static str {
+    #[cfg(target_os = "linux")]
+    if crate::desktop::appimage().is_some() {
+        return APPIMAGE_ASSET;
+    }
+    ASSET_NAME
+}
 
 #[derive(Deserialize)]
 struct GhAsset {
@@ -106,7 +119,7 @@ pub fn check() -> Result<Option<Release>, String> {
     Ok(Some(Release {
         version: rel.tag_name.trim_start_matches('v').to_string(),
         page: rel.html_url.clone(),
-        asset_url: find(ASSET_NAME),
+        asset_url: find(asset_name()),
         checksums_url: find(CHECKSUMS),
     }))
 }
@@ -118,7 +131,7 @@ pub fn download(release: &Release, progress: impl Fn(f32)) -> Result<PathBuf, St
         Some(u) => {
             let mut resp = agent().get(u).call().map_err(|e| e.to_string())?;
             let sums = resp.body_mut().read_to_string().map_err(|e| e.to_string())?;
-            Some(find_checksum(&sums, ASSET_NAME).ok_or("asset missing from checksums")?)
+            Some(find_checksum(&sums, asset_name()).ok_or("asset missing from checksums")?)
         }
         None => None,
     };
@@ -126,7 +139,7 @@ pub fn download(release: &Release, progress: impl Fn(f32)) -> Result<PathBuf, St
     let dir = std::env::temp_dir().join("apps-volume-control-update");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(ASSET_NAME);
+    let path = dir.join(asset_name());
 
     let mut resp = agent().get(url).call().map_err(|e| e.to_string())?;
     let total = resp.body().content_length().unwrap_or(0);
@@ -180,6 +193,11 @@ pub fn cleanup_previous() {
 
 /// The file (or `.app` bundle on macOS) that gets replaced on update.
 fn install_target() -> Option<PathBuf> {
+    // Inside an AppImage current_exe() is the read-only mount; replace the image itself.
+    #[cfg(target_os = "linux")]
+    if let Some(image) = crate::desktop::appimage() {
+        return Some(image);
+    }
     let exe = std::env::current_exe().ok()?;
     #[cfg(target_os = "macos")]
     {
