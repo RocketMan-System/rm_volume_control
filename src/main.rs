@@ -117,6 +117,7 @@ fn open_url(url: &str) {
 fn show_window(ui: &AppWindow) {
     let _ = ui.show();
     ui.window().set_minimized(false);
+    ui.set_animate(true);
 }
 
 /// Letter shown in place of a missing icon.
@@ -208,6 +209,8 @@ impl App {
         while self.records.row_count() > rows.len() {
             self.records.remove(self.records.row_count() - 1);
         }
+        self.ui.set_enabled_count(rows.iter().filter(|r| r.enabled).count() as i32);
+        self.ui.set_running_count(rows.iter().filter(|r| r.running).count() as i32);
 
         let mut status = Vec::new();
         if let Some(err) = &self.audio_error {
@@ -584,6 +587,7 @@ fn wire_callbacks(ui: &AppWindow) {
         if !to_tray {
             let _ = slint::quit_event_loop();
         }
+        with_app(|app| app.ui.set_animate(false));
         CloseRequestResponse::HideWindow
     });
 }
@@ -685,9 +689,12 @@ fn main() -> Result<(), slint::PlatformError> {
     let refresh_timer = Timer::default();
     refresh_timer.start(TimerMode::Repeated, REFRESH_INTERVAL, || {
         with_app(|app| {
-            if app.ui.window().is_visible() {
+            let window = app.ui.window();
+            if window.is_visible() {
                 app.audio.refresh();
             }
+            // Catches minimizing, which has no callback; showing and closing set it right away.
+            app.ui.set_animate(window.is_visible() && !window.is_minimized());
         });
     });
 

@@ -76,7 +76,25 @@ macro_rules! translations {
 translations! {
     set_new_record => ["New record", "Новий запис", "Новая запись"],
     set_new_record_desc => ["Create new controller", "Створити новий контролер", "Создать новый контроллер"],
+    set_records => ["Records", "Записи", "Записи"],
+    set_records_desc => [
+        "Hotkeys work even when the window is closed",
+        "Гарячі клавіші працюють навіть із закритим вікном",
+        "Горячие клавиши работают даже с закрытым окном"
+    ],
     set_settings => ["Settings", "Налаштування", "Настройки"],
+    set_settings_desc => [
+        "Appearance, startup and updates",
+        "Вигляд, запуск та оновлення",
+        "Внешний вид, запуск и обновления"
+    ],
+    set_stat_records => ["Records", "Записів", "Записей"],
+    set_stat_enabled => ["Enabled", "Увімкнено", "Включено"],
+    set_stat_running => ["Running", "Запущено", "Запущено"],
+    set_status_ready => ["Hotkeys are active", "Гарячі клавіші активні", "Горячие клавиши активны"],
+    set_group_appearance => ["Appearance", "Вигляд", "Внешний вид"],
+    set_group_behavior => ["Behavior", "Поведінка", "Поведение"],
+    set_group_updates => ["Updates", "Оновлення", "Обновления"],
     set_about => ["About", "Про програму", "О программе"],
     set_back => ["Back", "Назад", "Назад"],
     set_empty_data => [
