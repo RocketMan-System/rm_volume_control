@@ -2487,7 +2487,6 @@ export component AppWindow inherits Window {
 export component TrayIcon inherits SystemTrayIcon {
     icon: @image-url("../assets/tray.png");
     tooltip: "Apps Volume Control";
-    title: "Apps Volume Control";
     callback show-window();
     callback quit-app();
     clicked => { root.show-window(); }
