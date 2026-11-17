@@ -32,13 +32,17 @@ pub const MODE_ADJUST: i32 = 1;
 pub const DEFAULT_STEP: i32 = 5;
 pub const MAX_STEP: i32 = 50;
 
+/// Highest `min` / `max` a record can store. Above 100% the volume is capped by what the
+/// audio backend allows at the moment (see [`crate::audio::VolumeBackend::max_volume`]).
+const MAX_PERCENT: f64 = crate::audio::MAX_BOOST as f64 * 100.0;
+
 impl Record {
     pub fn min(&self) -> i32 {
-        self.min.unwrap_or(0.0).round().clamp(0.0, 100.0) as i32
+        self.min.unwrap_or(0.0).round().clamp(0.0, MAX_PERCENT) as i32
     }
 
     pub fn max(&self) -> i32 {
-        self.max.unwrap_or(100.0).round().clamp(0.0, 100.0) as i32
+        self.max.unwrap_or(100.0).round().clamp(0.0, MAX_PERCENT) as i32
     }
 
     pub fn step(&self) -> i32 {
@@ -187,8 +191,8 @@ mod tests {
 
     #[test]
     fn clamps_volume_bounds() {
-        let r = Record { min: Some(-5.0), max: Some(150.4), ..Default::default() };
-        assert_eq!((r.min(), r.max()), (0, 100));
+        let r = Record { min: Some(-5.0), max: Some(180.4), ..Default::default() };
+        assert_eq!((r.min(), r.max()), (0, 150));
         let r = Record { min: Some(33.6), ..Default::default() };
         assert_eq!(r.min(), 34);
         assert_eq!(r.step(), DEFAULT_STEP);

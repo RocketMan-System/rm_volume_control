@@ -30,7 +30,7 @@ pub struct AudioApp {
     pub key: String,
     /// Human friendly label (window title, application name, …).
     pub title: String,
-    /// 0.0 ..= 1.0
+    /// 0.0 ..= [`MAX_BOOST`]; above 1.0 only when the backend allows boosting.
     pub volume: f32,
     /// Has an open audio stream right now. Quiet apps (Linux) are listed so they can be
     /// picked, but their volume is only applied once they start playing.
@@ -39,10 +39,18 @@ pub struct AudioApp {
     pub icon: Option<PathBuf>,
 }
 
+/// Highest volume a backend may ever allow (KDE's "Raise maximum volume" goes up to 150%).
+pub const MAX_BOOST: f32 = 1.5;
+
 /// Operations every platform backend implements.
 pub trait VolumeBackend {
     fn list(&mut self) -> Vec<AudioApp>;
     fn set_volume(&mut self, key: &str, volume: f32) -> bool;
+    /// Highest volume allowed right now (1.0 = 100%, at most [`MAX_BOOST`]). Checked on every
+    /// batch of commands, so it may follow a desktop setting.
+    fn max_volume(&mut self) -> f32 {
+        1.0
+    }
     /// Icon of an app returned by the last `list`. Called once per app and session.
     fn icon(&mut self, _key: &str) -> Option<icons::Source> {
         None
@@ -67,7 +75,7 @@ impl AudioHandle {
     }
 
     pub fn set_volume(&self, key: &str, volume: f32) {
-        let _ = self.0.send(Cmd::SetVolume(key.to_string(), volume.clamp(0.0, 1.0)));
+        let _ = self.0.send(Cmd::SetVolume(key.to_string(), volume.clamp(0.0, MAX_BOOST)));
     }
 
     /// Switches `key` to whichever of `min`/`max` is farther from its current volume.
@@ -102,7 +110,7 @@ pub fn toggle_target(current: f32, min: f32, max: f32) -> f32 {
 
 /// Volume after a step, kept on whole percents so repeated steps don't drift.
 pub fn step_target(current: f32, delta: f32) -> f32 {
-    ((current * 100.0).round() + (delta * 100.0).round()).clamp(0.0, 100.0) / 100.0
+    ((current * 100.0).round() + (delta * 100.0).round()).clamp(0.0, MAX_BOOST * 100.0) / 100.0
 }
 
 /// Volume after a mute press and what to remember for the next one: a playing app goes to 0
@@ -117,6 +125,8 @@ pub fn mute_target(current: f32, remembered: Option<f32>) -> (f32, Option<f32>) 
 
 pub enum Event {
     Apps(Vec<AudioApp>),
+    /// The highest allowed volume changed (sent once on start, then on every change).
+    MaxVolume(f32),
     Unavailable(String),
 }
 
@@ -154,6 +164,8 @@ fn worker<B: VolumeBackend>(rx: Receiver<Cmd>, make: impl Fn() -> Result<B, Stri
 
     // Icon resolution is slow-ish (file system, shell APIs), so it runs once per app.
     let mut icon_paths: HashMap<String, Option<PathBuf>> = HashMap::new();
+    let mut limit = backend.max_volume();
+    on_event(Event::MaxVolume(limit));
     let mut apps = list(&mut backend, &mut icon_paths);
     on_event(Event::Apps(apps.clone()));
     // Volume of each muted app before it was muted.
@@ -163,6 +175,12 @@ fn worker<B: VolumeBackend>(rx: Receiver<Cmd>, make: impl Fn() -> Result<B, Stri
         // Coalesce bursts (e.g. dragging a slider) so only the latest value per app is applied.
         let mut cmds = vec![first];
         cmds.extend(rx.try_iter());
+
+        let max = backend.max_volume();
+        if max != limit {
+            limit = max;
+            on_event(Event::MaxVolume(limit));
+        }
 
         let mut needs_refresh = false;
         // Hotkey actions read the real current volume once per batch; later ones in the
@@ -182,6 +200,7 @@ fn worker<B: VolumeBackend>(rx: Receiver<Cmd>, make: impl Fn() -> Result<B, Stri
                         &mut backend,
                         &mut apps,
                         &mut pending_volumes,
+                        limit,
                         &mut icon_paths,
                         &mut listed,
                         &key,
@@ -194,6 +213,7 @@ fn worker<B: VolumeBackend>(rx: Receiver<Cmd>, make: impl Fn() -> Result<B, Stri
                         &mut backend,
                         &mut apps,
                         &mut pending_volumes,
+                        limit,
                         &mut icon_paths,
                         &mut listed,
                         &key,
@@ -206,6 +226,7 @@ fn worker<B: VolumeBackend>(rx: Receiver<Cmd>, make: impl Fn() -> Result<B, Stri
                         &mut backend,
                         &mut apps,
                         &mut pending_volumes,
+                        limit,
                         &mut icon_paths,
                         &mut listed,
                         &key,
@@ -220,7 +241,7 @@ fn worker<B: VolumeBackend>(rx: Receiver<Cmd>, make: impl Fn() -> Result<B, Stri
                 }
             }
         }
-        flush(&mut backend, &mut apps, &mut pending_volumes);
+        flush(&mut backend, &mut apps, &mut pending_volumes, limit);
         if needs_refresh {
             apps = list(&mut backend, &mut icon_paths);
         }
@@ -234,11 +255,12 @@ fn current_volume<B: VolumeBackend>(
     backend: &mut B,
     apps: &mut Vec<AudioApp>,
     pending: &mut Vec<(String, f32)>,
+    limit: f32,
     icon_paths: &mut HashMap<String, Option<PathBuf>>,
     listed: &mut bool,
     key: &str,
 ) -> Option<f32> {
-    flush(backend, apps, pending);
+    flush(backend, apps, pending, limit);
     if !*listed {
         *apps = list(backend, icon_paths);
         *listed = true;
@@ -257,8 +279,11 @@ fn list<B: VolumeBackend>(backend: &mut B, icon_paths: &mut HashMap<String, Opti
     apps
 }
 
-fn flush<B: VolumeBackend>(backend: &mut B, apps: &mut [AudioApp], pending: &mut Vec<(String, f32)>) {
+/// Applies `pending` volumes, capped at `limit` (a record's max may be above it when boosting
+/// was turned off later).
+fn flush<B: VolumeBackend>(backend: &mut B, apps: &mut [AudioApp], pending: &mut Vec<(String, f32)>, limit: f32) {
     for (key, vol) in pending.drain(..) {
+        let vol = vol.clamp(0.0, limit);
         if backend.set_volume(&key, vol) {
             if let Some(app) = apps.iter_mut().find(|a| a.key == key) {
                 app.volume = vol;
@@ -286,8 +311,9 @@ mod tests {
     #[test]
     fn step_stays_in_range_and_on_whole_percents() {
         assert_eq!(step_target(0.5, 0.05), 0.55);
-        assert_eq!(step_target(0.98, 0.05), 1.0);
+        assert_eq!(step_target(0.98, 0.05), 1.03); // capped at the current limit when applied
         assert_eq!(step_target(0.03, -0.05), 0.0);
+        assert_eq!(step_target(1.48, 0.05), MAX_BOOST);
         assert_eq!(step_target(0.333, 0.1), 0.43);
     }
 
@@ -306,6 +332,8 @@ mod tests {
     struct Mock {
         apps: Arc<Mutex<Vec<AudioApp>>>,
         sets: Arc<Mutex<Vec<(String, f32)>>>,
+        /// `None`: the default limit of 100%.
+        limit: Arc<Mutex<Option<f32>>>,
     }
 
     impl VolumeBackend for Mock {
@@ -323,6 +351,10 @@ mod tests {
                 }
                 None => false,
             }
+        }
+
+        fn max_volume(&mut self) -> f32 {
+            self.limit.lock().unwrap().unwrap_or(1.0)
         }
     }
 
@@ -414,6 +446,26 @@ mod tests {
         assert_eq!(next(&rx)[0].volume, 1.0);
         handle.set_volume("a", -1.0);
         assert_eq!(next(&rx)[0].volume, 0.0);
+        handle.shutdown();
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn volumes_follow_the_backend_limit() {
+        let mock = Mock::default();
+        mock.apps.lock().unwrap().push(app("a", 1.0));
+        *mock.limit.lock().unwrap() = Some(1.5);
+        let (handle, join, rx) = start(&mock);
+        next(&rx);
+        handle.set_volume("a", 1.3);
+        assert_eq!(next(&rx)[0].volume, 1.3);
+        handle.toggle("a", 0.2, 1.5);
+        assert_eq!(next(&rx)[0].volume, 0.2);
+
+        // Boost turned off: a max above 100% is capped.
+        *mock.limit.lock().unwrap() = None;
+        handle.toggle("a", 0.2, 1.5);
+        assert_eq!(next(&rx)[0].volume, 1.0);
         handle.shutdown();
         join.join().unwrap();
     }

@@ -126,6 +126,11 @@ export global Tr {
     in property <string> tray-quit: "Quit";
 }
 
+// Volume limits, set from Rust: 150 while KDE's "Raise maximum volume" is on, else 100.
+export global Limits {
+    in property <int> max-volume: 100;
+}
+
 // Design tokens: a dark indigo look with an orange "flame" second accent, plus a light variant.
 global Theme {
     // Palette.color-scheme stays `unknown` while it follows the system, so ask the style what it resolved to.
@@ -651,7 +656,7 @@ component VolSlider inherits Rectangle {
 component Ring inherits Rectangle {
     in property <int> value;
     property <float> shown: max(0, root.value);
-    property <angle> end: self.shown * 3.6deg;
+    property <angle> end: min(self.shown / Limits.max-volume, 1) * 360deg;
     animate shown { duration: 400ms; easing: ease-out; }
     width: 46px;
     height: 46px;
@@ -1415,6 +1420,7 @@ component RecordCard inherits Card {
         if root.data.hotkeys-incomplete: Warn { text: Tr.hotkeys-incomplete; }
 
         VolSlider {
+            maximum: Limits.max-volume;
             enabled: root.data.volume >= 0;
             value: root.data.volume < 0 ? 0 : root.data.volume;
             mark-a: root.adjust ? -1 : root.data.min;
@@ -1616,6 +1622,7 @@ component RecordCard inherits Card {
                 if !root.adjust: FieldRow {
                     label: Tr.field-min;
                     VolSlider {
+                        maximum: Limits.max-volume;
                         value: root.data.min;
                         released(v) => { root.set-min(round(v)); }
                     }
@@ -1631,6 +1638,7 @@ component RecordCard inherits Card {
                 if !root.adjust: FieldRow {
                     label: Tr.field-max;
                     VolSlider {
+                        maximum: Limits.max-volume;
                         value: root.data.max;
                         released(v) => { root.set-max(round(v)); }
                     }

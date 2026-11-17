@@ -5,7 +5,7 @@
 //! connected *clients* are listed too. A volume requested for a quiet app is remembered
 //! and applied to its next stream.
 
-use super::{AudioApp, VolumeBackend};
+use super::{AudioApp, VolumeBackend, MAX_BOOST};
 use crate::icons::{self, freedesktop};
 use libpulse_binding as pulse;
 use pulse::callbacks::ListResult;
@@ -17,6 +17,7 @@ use pulse::volume::{ChannelVolumes, Volume};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::time::SystemTime;
 
 struct SinkInput {
     index: u32,
@@ -97,7 +98,7 @@ fn merge(streams: &[SinkInput], clients: &[Client], pending: &HashMap<String, f3
         if apps.iter().any(|a| a.key == s.key) {
             continue;
         }
-        let volume = (s.volume.avg().0 as f32 / Volume::NORMAL.0 as f32).min(1.0);
+        let volume = (s.volume.avg().0 as f32 / Volume::NORMAL.0 as f32).min(MAX_BOOST);
         apps.push(AudioApp { key: s.key.clone(), title: s.title.clone(), volume, active: true, icon: None });
     }
     for c in clients {
@@ -114,6 +115,39 @@ fn merge(streams: &[SinkInput], clients: &[Client], pending: &HashMap<String, f3
     apps
 }
 
+/// KDE's "Raise maximum volume" option of the audio applet, kept in `~/.config/plasmaparc`.
+/// The file is read again only when its modification time changes.
+#[derive(Default)]
+struct KdeBoost {
+    modified: Option<SystemTime>,
+    enabled: bool,
+}
+
+impl KdeBoost {
+    fn enabled(&mut self) -> bool {
+        let Some(path) = dirs::config_dir().map(|d| d.join("plasmaparc")) else { return false };
+        let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        if modified != self.modified {
+            self.modified = modified;
+            self.enabled = std::fs::read_to_string(&path).is_ok_and(|text| raises_maximum_volume(&text));
+        }
+        self.enabled
+    }
+}
+
+/// `RaiseMaximumVolume=true` in the `[General]` group of a plasmaparc file.
+fn raises_maximum_volume(config: &str) -> bool {
+    let mut general = false;
+    for line in config.lines().map(str::trim) {
+        if line.starts_with('[') {
+            general = line == "[General]";
+        } else if let Some(value) = line.strip_prefix("RaiseMaximumVolume=").filter(|_| general) {
+            return value.trim() == "true";
+        }
+    }
+    false
+}
+
 // Field order matters: the context must be dropped before its main loop.
 pub struct Backend {
     context: Context,
@@ -123,6 +157,7 @@ pub struct Backend {
     /// Last volume requested per app, applied to streams the app opens later.
     pending: HashMap<String, f32>,
     seen_streams: HashSet<u32>,
+    boost: KdeBoost,
 }
 
 impl Drop for Backend {
@@ -158,6 +193,7 @@ impl Backend {
             clients: Vec::new(),
             pending: HashMap::new(),
             seen_streams: HashSet::new(),
+            boost: KdeBoost::default(),
         })
     }
 
@@ -247,7 +283,7 @@ impl Backend {
     }
 
     fn apply_volume(&mut self, key: &str, volume: f32) -> bool {
-        let raw = Volume((volume.clamp(0.0, 1.0) * Volume::NORMAL.0 as f32).round() as u32);
+        let raw = Volume((volume.clamp(0.0, MAX_BOOST) * Volume::NORMAL.0 as f32).round() as u32);
         let targets: Vec<(u32, ChannelVolumes)> = self
             .streams
             .iter()
@@ -291,6 +327,14 @@ impl VolumeBackend for Backend {
         self.apply_volume(key, volume) || self.clients.iter().any(|c| c.key == key)
     }
 
+    fn max_volume(&mut self) -> f32 {
+        if self.boost.enabled() {
+            MAX_BOOST
+        } else {
+            1.0
+        }
+    }
+
     fn icon(&mut self, key: &str) -> Option<icons::Source> {
         let mut hints = AppIcon::default();
         let mut title = key.to_string();
@@ -329,7 +373,7 @@ mod tests {
             eprintln!("{} → {icon:?}", app.key);
         }
         for app in &apps {
-            assert!((0.0..=1.0).contains(&app.volume));
+            assert!((0.0..=MAX_BOOST).contains(&app.volume));
             assert!(backend.set_volume(&app.key, app.volume));
         }
         assert!(!backend.set_volume("definitely-not-running", 0.5));
@@ -359,6 +403,15 @@ mod tests {
         assert_eq!(apps[1].key, "Telegram");
         assert!(!apps[1].active);
         assert_eq!(apps[1].volume, 0.3, "remembered volume of a quiet app");
+    }
+
+    #[test]
+    fn reads_kde_raise_maximum_volume() {
+        assert!(raises_maximum_volume("[General]\nRaiseMaximumVolume=true\n"));
+        assert!(!raises_maximum_volume("[General]\nRaiseMaximumVolume=false\n"));
+        assert!(!raises_maximum_volume("[General]\nVolumeStep=5\n"));
+        assert!(!raises_maximum_volume("[Other]\nRaiseMaximumVolume=true\n"));
+        assert!(!raises_maximum_volume(""));
     }
 
     #[test]

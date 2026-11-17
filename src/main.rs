@@ -71,6 +71,8 @@ struct App {
     apps: Vec<AudioApp>,
     audio: AudioHandle,
     audio_error: Option<String>,
+    /// Highest volume the audio backend allows right now, in percent.
+    max_volume: i32,
     hotkeys: Hotkeys,
     failed_hotkeys: HashSet<String>,
     /// Process keys behind the entries of the process combo box ("" = none).
@@ -143,8 +145,9 @@ fn fit_icon(image: &slint::Image, size: u32) -> slint::Image {
     slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(&pixels, w, h))
 }
 
-/// Builds the row shown for `record`, merged with the live audio state.
-fn record_row(record: &Record, apps: &[AudioApp], failed: &HashSet<String>) -> RecordData {
+/// Builds the row shown for `record`, merged with the live audio state. Volumes are shown up to
+/// `limit` percent (the highest volume allowed right now).
+fn record_row(record: &Record, apps: &[AudioApp], failed: &HashSet<String>, limit: i32) -> RecordData {
     let process = record.process.clone().unwrap_or_default();
     let app = apps.iter().find(|a| !process.is_empty() && a.key == process);
     let hotkey = record.hotkey.clone().unwrap_or_default();
@@ -169,10 +172,10 @@ fn record_row(record: &Record, apps: &[AudioApp], failed: &HashSet<String>) -> R
         hotkeys_incomplete: incomplete,
         mode: record.mode,
         step: record.step(),
-        min: record.min(),
-        max: record.max(),
+        min: record.min().min(limit),
+        max: record.max().min(limit),
         enabled: record.status,
-        volume: app.filter(|a| a.active).map(|a| (a.volume * 100.0).round() as i32).unwrap_or(-1),
+        volume: app.filter(|a| a.active).map(|a| ((a.volume * 100.0).round() as i32).min(limit)).unwrap_or(-1),
         icon: slint::Image::default(),
         initial: initial(app.map(|a| a.title.as_str()).unwrap_or(&process)),
     }
@@ -213,7 +216,7 @@ impl App {
             .records
             .iter()
             .map(|r| {
-                let mut row = record_row(r, &self.apps, &self.failed_hotkeys);
+                let mut row = record_row(r, &self.apps, &self.failed_hotkeys, self.max_volume);
                 row.icon = self.icon(&row.process);
                 row
             })
@@ -334,6 +337,10 @@ fn on_audio_event(event: audio::Event) {
                     app.audio_error = None;
                     app.apps = apps;
                     app.load_live_icons();
+                }
+                audio::Event::MaxVolume(max) => {
+                    app.max_volume = (max * 100.0).round() as i32;
+                    app.ui.global::<Limits>().set_max_volume(app.max_volume);
                 }
                 audio::Event::Unavailable(err) => app.audio_error = Some(err),
             }
@@ -680,6 +687,7 @@ fn main() -> Result<(), slint::PlatformError> {
             apps: Vec::new(),
             audio: audio.clone(),
             audio_error: None,
+            max_volume: 100,
             hotkeys,
             failed_hotkeys: HashSet::new(),
             edit_keys: Vec::new(),
@@ -767,7 +775,7 @@ mod tests {
             status: true,
             ..Default::default()
         };
-        let row = record_row(&r, &apps(), &HashSet::new());
+        let row = record_row(&r, &apps(), &HashSet::new(), 100);
         assert!(row.running);
         assert_eq!(row.volume, 42);
         assert_eq!(row.process_title.as_str(), "My Game · game.exe");
@@ -785,7 +793,7 @@ mod tests {
             ..Default::default()
         };
         let failed: HashSet<String> = ["Ctrl+F2".to_string()].into();
-        let row = record_row(&r, &apps(), &failed);
+        let row = record_row(&r, &apps(), &failed, 100);
         assert!(!row.running);
         assert_eq!(row.volume, -1);
         assert!(row.hotkey_error);
@@ -796,13 +804,13 @@ mod tests {
     fn disabled_record_never_reports_hotkey_error() {
         let r = Record { id: "3".into(), hotkey: Some("Ctrl+F2".into()), status: false, ..Default::default() };
         let failed: HashSet<String> = ["Ctrl+F2".to_string()].into();
-        assert!(!record_row(&r, &apps(), &failed).hotkey_error);
+        assert!(!record_row(&r, &apps(), &failed, 100).hotkey_error);
     }
 
     #[test]
     fn quiet_app_is_running_without_volume() {
         let r = Record { id: "5".into(), process: Some("quiet".into()), ..Default::default() };
-        let row = record_row(&r, &apps(), &HashSet::new());
+        let row = record_row(&r, &apps(), &HashSet::new(), 100);
         assert!(row.running);
         assert_eq!(row.volume, -1);
     }
@@ -814,9 +822,9 @@ mod tests {
         assert_eq!(initial("ß").as_str(), "SS");
         assert_eq!(initial("").as_str(), "");
         let r = Record { id: "6".into(), process: Some("game.exe".into()), ..Default::default() };
-        assert_eq!(record_row(&r, &apps(), &HashSet::new()).initial.as_str(), "M", "from the live title");
+        assert_eq!(record_row(&r, &apps(), &HashSet::new(), 100).initial.as_str(), "M", "from the live title");
         let r = Record { id: "7".into(), process: Some("closed.exe".into()), ..Default::default() };
-        assert_eq!(record_row(&r, &apps(), &HashSet::new()).initial.as_str(), "C");
+        assert_eq!(record_row(&r, &apps(), &HashSet::new(), 100).initial.as_str(), "C");
     }
 
     #[test]
@@ -832,14 +840,14 @@ mod tests {
         };
         // The toggle hotkey of the other mode doesn't count, a lone "up" is flagged.
         let failed: HashSet<String> = ["Ctrl+F1".to_string(), "Ctrl+Up".to_string()].into();
-        let row = record_row(&r, &apps(), &failed);
+        let row = record_row(&r, &apps(), &failed, 100);
         assert!(row.hotkeys_incomplete);
         assert!(!row.hotkey_error);
         assert_eq!(row.hotkey_label.as_str(), "Ctrl+M");
         assert_eq!(row.step, config::DEFAULT_STEP);
 
         r.hotkey_down = Some("Ctrl+Down".into());
-        let row = record_row(&r, &apps(), &failed);
+        let row = record_row(&r, &apps(), &failed, 100);
         assert!(!row.hotkeys_incomplete);
         assert!(row.hotkey_error);
         assert_eq!(row.hotkey_label.as_str(), "Ctrl+Up / Ctrl+Down · Ctrl+M");
@@ -848,6 +856,6 @@ mod tests {
     #[test]
     fn title_equal_to_key_is_not_repeated() {
         let r = Record { id: "4".into(), process: Some("bare.exe".into()), ..Default::default() };
-        assert_eq!(record_row(&r, &apps(), &HashSet::new()).process_title.as_str(), "bare.exe");
+        assert_eq!(record_row(&r, &apps(), &HashSet::new(), 100).process_title.as_str(), "bare.exe");
     }
 }

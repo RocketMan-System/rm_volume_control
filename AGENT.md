@@ -64,6 +64,10 @@ scripts/              install-macos.sh, install-linux.sh (also published as rele
 - **Record modes** (`Record::mode`): 0 = toggle (default, `hotkey`, `min`/`max`); `MODE_ADJUST` = volume
   up/down by `step` % (`hotkeyUp` + `hotkeyDown`, active only as a pair) and/or mute (`hotkeyMute`). Mute
   remembers the previous volume in the audio worker (in memory; unmuting with nothing remembered → 100%).
+- **Volume limit.** `VolumeBackend::max_volume` (default 1.0) caps every applied volume; the worker checks it
+  on each batch and reports changes as `Event::MaxVolume`, which sets the `Limits.max-volume` slider range. On
+  Linux it is 1.5 while KDE's "Raise maximum volume" (`RaiseMaximumVolume` in `~/.config/plasmaparc`) is on.
+  Records may store min/max up to 150%; they are shown and applied capped at the current limit.
 - **Model updates.** `App::render` updates the `VecModel` row by row; do not replace the whole model, or the
   open editor (LineEdit focus, ComboBox) resets every 2 s refresh.
 - **Nothing slow on the UI thread before `show()`.** The Linux tray registration with the tray host is a
