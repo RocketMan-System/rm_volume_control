@@ -11,6 +11,8 @@ mod hotkeys;
 mod i18n;
 mod icons;
 mod instance;
+#[cfg(target_os = "linux")]
+mod keep_above;
 mod tray;
 mod updater;
 
@@ -311,6 +313,10 @@ impl App {
             }
         }
         self.cfg.autostart = autostart;
+        #[cfg(target_os = "linux")]
+        if ui.get_on_top() != self.cfg.lock_top {
+            keep_above::set(ui.get_on_top());
+        }
         self.cfg.lock_top = ui.get_on_top();
         self.cfg.close_to_tray = ui.get_close_to_tray();
         self.cfg.start_minimized = ui.get_start_minimized();
@@ -669,6 +675,10 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_language_index(i18n::index_of(&cfg.lang) as i32);
     ui.set_theme_index(cfg.theme);
     ui.set_on_top(cfg.lock_top);
+    #[cfg(target_os = "linux")]
+    if cfg.lock_top {
+        keep_above::set(true);
+    }
     ui.set_close_to_tray(cfg.close_to_tray);
     ui.set_autostart(cfg.autostart);
     ui.set_start_minimized(cfg.start_minimized);
@@ -745,6 +755,8 @@ fn main() -> Result<(), slint::PlatformError> {
     slint::run_event_loop_until_quit()?;
 
     with_app(|app| app.save());
+    #[cfg(target_os = "linux")]
+    keep_above::clear();
     audio.shutdown();
     let _ = audio_thread.join();
     APP.with(|cell| cell.borrow_mut().take());

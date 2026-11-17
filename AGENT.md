@@ -37,6 +37,7 @@ src/audio/macos.rs    Process taps + private aggregate device + IO proc that app
 src/icons.rs          App icons: cache in <cache_dir>/apps-volume-control/icons, freedesktop theme lookup (Linux)
 src/autostart.rs      Registry Run key / XDG autostart / LaunchAgent, always with `--minimized`
 src/desktop.rs        Linux app_id; AppImage menu entry + icon (prompt / Settings), respects AppImageLauncher entries
+src/keep_above.rs     "Always on top" under Wayland via a KWin script over D-Bus (KDE only)
 src/tray.rs           Tray wrapper: Slint TrayIcon (Win/macOS) or ksni on a background thread (Linux)
 src/instance.rs       Single instance via loopback TCP 127.0.0.1:47613 ("show" message)
 src/updater.rs        Check / download / verify / swap binary and relaunch
@@ -137,6 +138,7 @@ Add tests for any new pure logic; keep platform FFI thin so the logic around it 
 ## Known limitations
 
 - Linux global hotkeys need X11 (no Wayland global-shortcut portal yet).
+- "Always on top" under Wayland works only on KDE (KWin script); other Wayland compositors have no API for it.
 - Hotkey capture maps Latin letters/digits/F-keys; keys typed on a non-Latin layout are ignored.
 - macOS process taps require 14.2+; the app's audio is re-played through the default output device, so
   device switches are picked up on the next refresh (≤ 2 s while the window is open, otherwise on next toggle).

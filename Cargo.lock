@@ -236,6 +236,7 @@ dependencies = [
  "ureq",
  "windows",
  "winresource",
+ "zbus",
 ]
 
 [[package]]

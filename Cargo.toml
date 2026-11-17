@@ -46,6 +46,8 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 # synchronously on the UI thread and can stall startup while the tray host answers.
 ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
 libpulse-binding = "2"
+# KWin scripting for "always on top" under Wayland (already pulled in by ksni).
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
