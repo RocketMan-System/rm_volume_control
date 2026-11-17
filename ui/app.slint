@@ -1746,9 +1746,10 @@ export component AppWindow inherits Window {
     HorizontalLayout {
         // Navigation rail
         Rectangle {
+            // Not animated: on Windows the animation clock stops during the modal resize loop, so an animated
+            // width froze at its old value while the labels already followed `compact`.
             width: root.compact ? 64px : 212px;
             background: Theme.rail;
-            animate width { duration: 180ms; easing: ease-out; }
             VerticalLayout {
                 padding: 12px;
                 padding-top: 16px;
