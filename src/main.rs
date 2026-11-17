@@ -53,6 +53,9 @@ struct App {
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
+    /// Physical key (winit name, e.g. `KeyA`) of the last press in the window: Slint's key
+    /// events only carry layout-dependent text and don't tell numpad keys apart.
+    static PHYSICAL_KEY: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
 fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
@@ -320,6 +323,20 @@ fn install_update() {
 }
 
 fn wire_callbacks(ui: &AppWindow) {
+    use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
+    // Runs before Slint dispatches the key, so `hotkey_captured` sees the key of its own press.
+    ui.window().on_winit_window_event(|_, event| {
+        if let winit::event::WindowEvent::KeyboardInput { event, .. } = event {
+            if event.state.is_pressed() {
+                let name = match event.physical_key {
+                    winit::keyboard::PhysicalKey::Code(code) => format!("{code:?}"),
+                    _ => String::new(),
+                };
+                PHYSICAL_KEY.set(name);
+            }
+        }
+        EventResult::Propagate
+    });
     ui.on_add_record(|| {
         with_app(|app| {
             let id = new_record_id();
@@ -376,7 +393,8 @@ fn wire_callbacks(ui: &AppWindow) {
         });
     });
     ui.on_hotkey_captured(|id, text, ctrl, alt, shift, meta| {
-        let Some(hotkey) = hotkeys::format_hotkey(&text, ctrl, alt, shift, meta) else { return false };
+        let physical = PHYSICAL_KEY.with_borrow(Clone::clone);
+        let Some(hotkey) = hotkeys::format_hotkey(&text, &physical, ctrl, alt, shift, meta) else { return false };
         with_app(|app| app.update_record(&id, |r| r.hotkey = Some(hotkey)));
         true
     });

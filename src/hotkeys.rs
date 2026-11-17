@@ -99,9 +99,11 @@ pub fn bindings_for(records: &[Record]) -> (TargetMap, Vec<(String, HotKey)>) {
 }
 
 /// Turns a key press captured by the UI into a hotkey string such as `Ctrl+Shift+F5`.
+/// `physical` is the winit name of the pressed key (`KeyA`, `Digit5`, `Numpad5`, or empty):
+/// it keeps letters independent of the keyboard layout and tells numpad keys apart.
 /// Returns `None` for presses that can't be used as a global hotkey.
-pub fn format_hotkey(text: &str, ctrl: bool, alt: bool, shift: bool, meta: bool) -> Option<String> {
-    let key = key_name(text)?;
+pub fn format_hotkey(text: &str, physical: &str, ctrl: bool, alt: bool, shift: bool, meta: bool) -> Option<String> {
+    let key = physical_key_name(physical, text).or_else(|| key_name(text))?;
     let is_function_key = key.len() >= 2 && key.starts_with('F') && key[1..].chars().all(|c| c.is_ascii_digit());
     // Plain letters/digits without a modifier would swallow normal typing.
     if !(ctrl || alt || meta || shift) && !is_function_key {
@@ -122,6 +124,21 @@ pub fn format_hotkey(text: &str, ctrl: bool, alt: bool, shift: bool, meta: bool)
     }
     let combo = if parts.is_empty() { key } else { format!("{}+{}", parts.join("+"), key) };
     HotKey::from_str(&combo).ok().map(|_| combo)
+}
+
+/// Letters, digits and numpad keys by their position, so `Ctrl+Ф` on a Cyrillic layout is `Ctrl+A`.
+fn physical_key_name(physical: &str, text: &str) -> Option<String> {
+    if let Some(c) = physical.strip_prefix("Key").or_else(|| physical.strip_prefix("Digit")) {
+        return (c.len() == 1).then(|| c.to_string());
+    }
+    let numpad = physical.strip_prefix("Numpad")?;
+    // With NumLock off numpad keys send Home/End/arrows, and global hotkeys see those instead.
+    let numlock_on = match numpad {
+        "Add" | "Subtract" | "Multiply" | "Divide" => true,
+        "Decimal" => text == "." || text == ",",
+        d => d.len() == 1 && d == text,
+    };
+    numlock_on.then(|| physical.to_string())
 }
 
 fn key_name(text: &str) -> Option<String> {
@@ -175,35 +192,52 @@ mod tests {
 
     #[test]
     fn formats_function_keys() {
-        assert_eq!(format_hotkey(&key(Key::F1), true, false, false, false).as_deref(), Some("Ctrl+F1"));
-        assert_eq!(format_hotkey(&key(Key::F12), false, true, true, false).as_deref(), Some("Alt+Shift+F12"));
+        assert_eq!(format_hotkey(&key(Key::F1), "", true, false, false, false).as_deref(), Some("Ctrl+F1"));
+        assert_eq!(format_hotkey(&key(Key::F12), "", false, true, true, false).as_deref(), Some("Alt+Shift+F12"));
         // Function keys may be used without modifiers.
-        assert_eq!(format_hotkey(&key(Key::F7), false, false, false, false).as_deref(), Some("F7"));
+        assert_eq!(format_hotkey(&key(Key::F7), "", false, false, false, false).as_deref(), Some("F7"));
     }
 
     #[test]
     fn letters_need_a_modifier() {
-        assert_eq!(format_hotkey("a", false, false, false, false), None);
-        assert_eq!(format_hotkey("a", true, true, false, false).as_deref(), Some("Ctrl+Alt+A"));
-        assert_eq!(format_hotkey("5", false, false, false, true).as_deref(), Some("Super+5"));
+        assert_eq!(format_hotkey("a", "", false, false, false, false), None);
+        assert_eq!(format_hotkey("a", "", true, true, false, false).as_deref(), Some("Ctrl+Alt+A"));
+        assert_eq!(format_hotkey("5", "", false, false, false, true).as_deref(), Some("Super+5"));
     }
 
     #[test]
     fn maps_shifted_digits() {
-        assert_eq!(format_hotkey("!", true, false, true, false).as_deref(), Some("Ctrl+Shift+1"));
+        assert_eq!(format_hotkey("!", "", true, false, true, false).as_deref(), Some("Ctrl+Shift+1"));
+    }
+
+    #[test]
+    fn letters_ignore_keyboard_layout() {
+        assert_eq!(format_hotkey("ф", "KeyA", true, false, false, false).as_deref(), Some("Ctrl+A"));
+        assert_eq!(format_hotkey("%", "Digit5", true, false, true, false).as_deref(), Some("Ctrl+Shift+5"));
+    }
+
+    #[test]
+    fn separates_numpad_keys() {
+        assert_eq!(format_hotkey("5", "Numpad5", true, false, false, false).as_deref(), Some("Ctrl+Numpad5"));
+        assert_eq!(format_hotkey("5", "Digit5", true, false, false, false).as_deref(), Some("Ctrl+5"));
+        assert_eq!(format_hotkey("+", "NumpadAdd", false, true, false, false).as_deref(), Some("Alt+NumpadAdd"));
+        // NumLock off: the key acts as Home.
+        assert_eq!(format_hotkey(&key(Key::Home), "Numpad7", true, false, false, false).as_deref(), Some("Ctrl+Home"));
+        // Bare numpad digits would swallow typing too.
+        assert_eq!(format_hotkey("5", "Numpad5", false, false, false, false), None);
     }
 
     #[test]
     fn rejects_unusable_keys() {
-        // Modifier alone, non-latin layout characters and multi-char text.
-        assert_eq!(format_hotkey(&key(Key::Control), true, false, false, false), None);
-        assert_eq!(format_hotkey("ф", true, false, false, false), None);
-        assert_eq!(format_hotkey("ab", true, false, false, false), None);
+        // Modifier alone, non-latin text without a known key and multi-char text.
+        assert_eq!(format_hotkey(&key(Key::Control), "", true, false, false, false), None);
+        assert_eq!(format_hotkey("ф", "", true, false, false, false), None);
+        assert_eq!(format_hotkey("ab", "", true, false, false, false), None);
     }
 
     #[test]
     fn formatted_hotkeys_parse() {
-        for text in ["Ctrl+F1", "Shift+F12", "Alt+F5", "Ctrl+Alt+A", "Super+Space", "Ctrl+Shift+Up"] {
+        for text in ["Ctrl+F1", "Shift+F12", "Alt+F5", "Ctrl+Alt+A", "Super+Space", "Ctrl+Shift+Up", "Ctrl+Numpad5", "Alt+NumpadDecimal"] {
             assert!(HotKey::from_str(text).is_ok(), "{text}");
         }
     }
