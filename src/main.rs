@@ -77,6 +77,8 @@ struct App {
     edit_keys: Vec<String>,
     /// Loaded icon per process key (`None`: no icon). Filled lazily from the icon cache.
     icons: RefCell<HashMap<String, Option<slint::Image>>>,
+    /// `icons` resampled for the window's scale factor (the factor they were made for).
+    scaled_icons: RefCell<(f32, HashMap<String, slint::Image>)>,
     /// Keys whose icon was refreshed by the audio worker in this session.
     live_icons: HashSet<String>,
     refresh_edit_list: bool,
@@ -129,6 +131,18 @@ fn load_icon(path: &std::path::Path) -> Option<slint::Image> {
     slint::Image::load_from_path(path).ok().filter(|i| i.size().width > 0)
 }
 
+/// Largest logical size an app icon is drawn at (the record card's `AppIcon`).
+const ICON_SIZE: f32 = 26.0;
+
+/// `image` downscaled to `size` physical pixels; SVGs and small images stay as they are.
+fn fit_icon(image: &slint::Image, size: u32) -> slint::Image {
+    let Some(buffer) = image.to_rgba8() else { return image.clone() };
+    let Some((w, h, pixels)) = icons::downscale(buffer.width(), buffer.height(), buffer.as_bytes(), size) else {
+        return image.clone();
+    };
+    slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(&pixels, w, h))
+}
+
 /// Builds the row shown for `record`, merged with the live audio state.
 fn record_row(record: &Record, apps: &[AudioApp], failed: &HashSet<String>) -> RecordData {
     let process = record.process.clone().unwrap_or_default();
@@ -172,7 +186,14 @@ impl App {
         }
         let mut icons = self.icons.borrow_mut();
         let icon = icons.entry(key.to_string()).or_insert_with(|| icons::cached(key).and_then(|p| load_icon(&p)));
-        icon.clone().unwrap_or_default()
+        let Some(icon) = icon else { return slint::Image::default() };
+        let scale = self.ui.window().scale_factor();
+        let mut scaled = self.scaled_icons.borrow_mut();
+        if scaled.0 != scale {
+            *scaled = (scale, HashMap::new());
+        }
+        let size = (ICON_SIZE * scale).ceil() as u32;
+        scaled.1.entry(key.to_string()).or_insert_with(|| fit_icon(icon, size)).clone()
     }
 
     /// Loads icons the audio worker resolved, replacing older cached ones once per session.
@@ -181,6 +202,7 @@ impl App {
             let Some(path) = &app.icon else { continue };
             if self.live_icons.insert(app.key.clone()) {
                 self.icons.borrow_mut().insert(app.key.clone(), load_icon(path));
+                self.scaled_icons.borrow_mut().1.remove(&app.key);
             }
         }
     }
@@ -662,6 +684,7 @@ fn main() -> Result<(), slint::PlatformError> {
             failed_hotkeys: HashSet::new(),
             edit_keys: Vec::new(),
             icons: RefCell::default(),
+            scaled_icons: RefCell::default(),
             live_icons: HashSet::new(),
             refresh_edit_list: false,
             release: None,

@@ -88,6 +88,68 @@ fn encode_png(width: u32, height: u32, pixels: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Area-averaged downscale of straight RGBA pixels so the longer side is `size` (the software
+/// renderer scales images with nearest-neighbour sampling, which looks pixelated).
+/// `None` when the image is already small enough.
+pub fn downscale(width: u32, height: u32, pixels: &[u8], size: u32) -> Option<(u32, u32, Vec<u8>)> {
+    let longest = width.max(height);
+    if size == 0 || longest <= size || pixels.len() != (width * height * 4) as usize {
+        return None;
+    }
+    let ratio = longest as f32 / size as f32;
+    let dst_w = ((width as f32 / ratio).round() as u32).max(1);
+    let dst_h = ((height as f32 / ratio).round() as u32).max(1);
+
+    // Source pixels covering each destination pixel along one axis, with their coverage.
+    let spans = |src: u32, dst: u32| -> Vec<Vec<(usize, f32)>> {
+        let step = src as f32 / dst as f32;
+        (0..dst)
+            .map(|i| {
+                let (start, end) = (i as f32 * step, (i + 1) as f32 * step);
+                (start.floor() as u32..(end.ceil() as u32).min(src))
+                    .map(|j| (j as usize, (end.min(j as f32 + 1.0) - start.max(j as f32)) / step))
+                    .filter(|(_, w)| *w > 0.0)
+                    .collect()
+            })
+            .collect()
+    };
+
+    // Premultiplied so transparent pixels don't bleed their colour into the edges.
+    let src: Vec<[f32; 4]> = pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| {
+            let a = p[3] as f32 / 255.0;
+            [p[0] as f32 * a, p[1] as f32 * a, p[2] as f32 * a, p[3] as f32]
+        })
+        .collect();
+    let mut rows = vec![[0.0f32; 4]; (dst_w * height) as usize];
+    for y in 0..height as usize {
+        for (x, span) in spans(width, dst_w).iter().enumerate() {
+            let out = &mut rows[y * dst_w as usize + x];
+            for &(j, w) in span {
+                let p = src[y * width as usize + j];
+                (0..4).for_each(|c| out[c] += p[c] * w);
+            }
+        }
+    }
+    let mut out = Vec::with_capacity((dst_w * dst_h * 4) as usize);
+    for span in spans(height, dst_h) {
+        for x in 0..dst_w as usize {
+            let mut acc = [0.0f32; 4];
+            for &(j, w) in &span {
+                let p = rows[j * dst_w as usize + x];
+                (0..4).for_each(|c| acc[c] += p[c] * w);
+            }
+            let a = acc[3] / 255.0;
+            let un = |v: f32| if a > 0.0 { (v / a).round().clamp(0.0, 255.0) as u8 } else { 0 };
+            out.extend_from_slice(&[un(acc[0]), un(acc[1]), un(acc[2]), acc[3].round().clamp(0.0, 255.0) as u8]);
+        }
+    }
+    Some((dst_w, dst_h, out))
+}
+
 /// Freedesktop icon lookup: `.desktop` entries and icon themes.
 #[cfg(target_os = "linux")]
 pub mod freedesktop {
@@ -269,10 +331,11 @@ pub mod freedesktop {
         if as_path.is_absolute() {
             return as_path.is_file().then(|| as_path.to_path_buf());
         }
+        // Largest first: the UI downscales the icon to its exact on-screen size.
         const SIZES: [&str; 9] =
-            ["scalable", "64x64", "48x48", "128x128", "96x96", "256x256", "32x32", "512x512", "24x24"];
+            ["scalable", "256x256", "512x512", "128x128", "96x96", "64x64", "48x48", "32x32", "24x24"];
         // Breeze/Papirus lay out "apps/<size>/" instead of "<size>/apps/".
-        const BREEZE_SIZES: [&str; 5] = ["scalable", "64", "48", "32", "128"];
+        const BREEZE_SIZES: [&str; 5] = ["scalable", "128", "64", "48", "32"];
         let mut themes: Vec<String> = user_theme().into_iter().collect();
         for t in ["hicolor", "breeze", "Adwaita"] {
             if !themes.iter().any(|x| x == t) {
@@ -393,6 +456,26 @@ mod tests {
         assert_eq!(file_stem("com.apple.Music"), "app-com.apple.music");
         assert_eq!(file_stem("../x y/z"), "app-.._x_y_z");
         assert_eq!(file_stem(".."), "app-..");
+    }
+
+    #[test]
+    fn downscales_by_area_average() {
+        // 4×2: left half opaque red, right half fully transparent.
+        let mut px = Vec::new();
+        for _ in 0..2 {
+            px.extend_from_slice(&[255, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 0, 0, 255, 0, 0]);
+        }
+        let (w, h, out) = downscale(4, 2, &px, 2).unwrap();
+        assert_eq!((w, h), (2, 1));
+        assert_eq!(out, vec![255, 0, 0, 255, 0, 0, 0, 0]);
+
+        let (w, h, out) = downscale(4, 2, &px, 1).unwrap();
+        assert_eq!((w, h), (1, 1));
+        assert_eq!(out, vec![255, 0, 0, 128], "colour of the transparent half doesn't bleed in");
+
+        assert!(downscale(4, 2, &px, 4).is_none());
+        let (w, h, _) = downscale(64, 64, &vec![0; 64 * 64 * 4], 33).unwrap();
+        assert_eq!((w, h), (33, 33));
     }
 
     #[test]
