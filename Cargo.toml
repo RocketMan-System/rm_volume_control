@@ -61,6 +61,14 @@ libc = "0.2"
 slint-build = "1.19"
 winresource = "0.1"
 
+# Local iteration: `cargo run` builds only our crate unoptimized (fast incremental),
+# while dependencies (Slint's software renderer etc.) are optimized once and cached.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3
+
 [profile.release]
 codegen-units = 1
 lto = true
