@@ -1,8 +1,10 @@
 //! Global hotkeys. Records store hotkeys as strings like `Ctrl+F1` (the format of the
-//! Electron version), which `global-hotkey` parses directly.
+//! Electron version), which `global-hotkey` parses directly. Mouse buttons (`Ctrl+Mouse4`)
+//! go through our own hook in `mouse`.
 
 use crate::audio::AudioHandle;
 use crate::config::Record;
+use crate::mouse::{self, Mods, MouseCombo};
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use slint::platform::Key;
@@ -34,14 +36,63 @@ impl Target {
     }
 }
 
-/// Targets of every registered hotkey, keyed by hotkey id.
-type TargetMap = HashMap<u32, Vec<Target>>;
+/// A parsed hotkey string.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Trigger {
+    Key(HotKey),
+    Mouse(MouseCombo),
+}
+
+impl FromStr for Trigger {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, ()> {
+        HotKey::from_str(s).map(Self::Key).or_else(|_| s.parse().map(Self::Mouse))
+    }
+}
+
+/// Targets of every registered hotkey: keyboard ones by hotkey id, mouse ones by combo.
+#[derive(Debug, Default)]
+pub struct TargetMap {
+    keys: HashMap<u32, Vec<Target>>,
+    mouse: HashMap<MouseCombo, Vec<Target>>,
+}
+
+impl TargetMap {
+    fn add(&mut self, trigger: Trigger, target: Target) {
+        match trigger {
+            Trigger::Key(k) => self.keys.entry(k.id()).or_default().push(target),
+            Trigger::Mouse(m) => self.mouse.entry(m).or_default().push(target),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn targets(&self, trigger: &Trigger) -> &[Target] {
+        let list = match trigger {
+            Trigger::Key(k) => self.keys.get(&k.id()),
+            Trigger::Mouse(m) => self.mouse.get(m),
+        };
+        list.map_or(&[], Vec::as_slice)
+    }
+
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty() && self.mouse.is_empty()
+    }
+}
+
 type Bindings = Arc<Mutex<TargetMap>>;
 
 pub struct Hotkeys {
     manager: Option<GlobalHotKeyManager>,
     registered: Vec<HotKey>,
     bindings: Bindings,
+}
+
+fn run_all(targets: &[Target], audio: &AudioHandle) {
+    for t in targets {
+        t.run(audio);
+    }
 }
 
 impl Hotkeys {
@@ -55,17 +106,21 @@ impl Hotkeys {
             }
         };
         let bindings: Bindings = Arc::default();
-        let map = bindings.clone();
+        let (map, mouse_audio) = (bindings.clone(), audio.clone());
         GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
             if event.state() != HotKeyState::Pressed {
                 return;
             }
-            if let Some(targets) = map.lock().unwrap().get(&event.id()) {
-                for t in targets {
-                    t.run(&audio);
-                }
+            if let Some(targets) = map.lock().unwrap().keys.get(&event.id()) {
+                run_all(targets, &audio);
             }
         }));
+        let map = bindings.clone();
+        mouse::set_handler(move |combo| {
+            if let Some(targets) = map.lock().unwrap().mouse.get(&combo) {
+                run_all(targets, &mouse_audio);
+            }
+        });
         Self { manager, registered: Vec::new(), bindings }
     }
 
@@ -83,30 +138,39 @@ impl Hotkeys {
         self.registered.clear();
 
         let (map, keys) = bindings_for(records);
-        for (text, hotkey) in keys {
-            if manager.register(hotkey).is_ok() {
-                self.registered.push(hotkey);
-            } else {
-                failed.insert(text);
+        let mut combos = Vec::new();
+        for (text, trigger) in &keys {
+            match *trigger {
+                Trigger::Key(hotkey) if manager.register(hotkey).is_ok() => self.registered.push(hotkey),
+                Trigger::Key(_) => {
+                    failed.insert(text.clone());
+                }
+                Trigger::Mouse(combo) => combos.push(combo),
             }
         }
         *self.bindings.lock().unwrap() = map;
+        let failed_mouse = mouse::set(&combos);
+        for (text, trigger) in keys {
+            if matches!(trigger, Trigger::Mouse(c) if failed_mouse.contains(&c)) {
+                failed.insert(text);
+            }
+        }
         failed
     }
 }
 
-/// Groups enabled records by hotkey id. Also returns each distinct hotkey once.
-pub fn bindings_for(records: &[Record]) -> (TargetMap, Vec<(String, HotKey)>) {
-    let mut map: TargetMap = HashMap::new();
-    let mut keys: Vec<(String, HotKey)> = Vec::new();
+/// Groups enabled records by hotkey. Also returns each distinct hotkey once.
+pub fn bindings_for(records: &[Record]) -> (TargetMap, Vec<(String, Trigger)>) {
+    let mut map = TargetMap::default();
+    let mut keys: Vec<(String, Trigger)> = Vec::new();
     for r in records.iter().filter(|r| r.status) {
         let Some(process) = r.process.as_deref() else { continue };
         for (text, action) in actions(r) {
-            let Ok(hotkey) = HotKey::from_str(text) else { continue };
-            if !keys.iter().any(|(_, k)| k.id() == hotkey.id()) {
-                keys.push((text.to_string(), hotkey));
+            let Ok(trigger) = Trigger::from_str(text) else { continue };
+            if !keys.iter().any(|(_, t)| *t == trigger) {
+                keys.push((text.to_string(), trigger));
             }
-            map.entry(hotkey.id()).or_default().push(Target { process: process.to_string(), action });
+            map.add(trigger, Target { process: process.to_string(), action });
         }
     }
     (map, keys)
@@ -136,27 +200,64 @@ fn actions(r: &Record) -> Vec<(&str, Action)> {
 /// it keeps letters independent of the keyboard layout and tells numpad keys apart.
 /// Returns `None` for presses that can't be used as a global hotkey.
 pub fn format_hotkey(text: &str, physical: &str, ctrl: bool, alt: bool, shift: bool, meta: bool) -> Option<String> {
-    let key = physical_key_name(physical, text).or_else(|| key_name(text))?;
-    let is_function_key = key.len() >= 2 && key.starts_with('F') && key[1..].chars().all(|c| c.is_ascii_digit());
+    let mods = Mods { ctrl, alt, shift, meta };
+    let (key, standalone) = match physical_key_name(physical, text).or_else(|| key_name(text)) {
+        Some(key) => {
+            let is_function_key =
+                key.len() >= 2 && key.starts_with('F') && key[1..].chars().all(|c| c.is_ascii_digit());
+            (key, is_function_key)
+        }
+        // Media keys print nothing, and do nothing in normal typing.
+        None => (media_key_name(physical)?.to_string(), true),
+    };
     // Plain letters/digits without a modifier would swallow normal typing.
-    if !(ctrl || alt || meta || shift) && !is_function_key {
+    if !mods.any() && !standalone {
         return None;
     }
-    let mut parts: Vec<&str> = Vec::new();
-    if ctrl {
-        parts.push("Ctrl");
-    }
-    if alt {
-        parts.push("Alt");
-    }
-    if shift {
-        parts.push("Shift");
-    }
-    if meta {
-        parts.push("Super");
-    }
-    let combo = if parts.is_empty() { key } else { format!("{}+{}", parts.join("+"), key) };
+    let combo = with_modifiers(mods, &key);
     HotKey::from_str(&combo).ok().map(|_| combo)
+}
+
+/// Turns a mouse button pressed in the hotkey field (3 middle, 4 back, 5 forward, 6 / 7 wheel
+/// up / down) into a hotkey string such as `Ctrl+Mouse4`. The middle button and the wheel need
+/// a modifier, as they paste and scroll; left and right buttons are never used.
+pub fn format_mouse_hotkey(button: i32, ctrl: bool, alt: bool, shift: bool, meta: bool) -> Option<String> {
+    let button = mouse::Button::from_number(button)?;
+    let mods = Mods { ctrl, alt, shift, meta };
+    if (button == mouse::Button::Middle || button.is_wheel()) && !mods.any() {
+        return None;
+    }
+    Some(with_modifiers(mods, button.name()))
+}
+
+fn with_modifiers(mods: Mods, key: &str) -> String {
+    let names = [(mods.ctrl, "Ctrl"), (mods.alt, "Alt"), (mods.shift, "Shift"), (mods.meta, "Super")];
+    let mut parts: Vec<&str> = names.iter().filter(|(on, _)| *on).map(|(_, name)| *name).collect();
+    parts.push(key);
+    parts.join("+")
+}
+
+/// Text of a synthetic key press that stands for a media key (see `is_media_key`): Slint drops
+/// key presses without text, and media keys have none. It is in the private use range that
+/// Slint's text inputs ignore, and is no key of its own.
+pub const MEDIA_KEY_TEXT: &str = "\u{F7FF}";
+
+pub fn is_media_key(physical: &str) -> bool {
+    media_key_name(physical).is_some()
+}
+
+/// Media and volume keys by their winit name; the names are what `global-hotkey` parses.
+fn media_key_name(physical: &str) -> Option<&'static str> {
+    #[rustfmt::skip]
+    const MEDIA: &[&str] = &[
+        "MediaPlayPause", "MediaStop", "MediaTrackNext", "MediaTrackPrevious", "MediaSelect",
+        "AudioVolumeUp", "AudioVolumeDown", "AudioVolumeMute",
+        "MediaPlay", "MediaPause", "MediaFastForward", "MediaRewind", "MediaRecord",
+        "LaunchMail", "LaunchApp1", "LaunchApp2",
+        "BrowserBack", "BrowserForward", "BrowserRefresh", "BrowserStop", "BrowserSearch",
+        "BrowserFavorites", "BrowserHome",
+    ];
+    MEDIA.iter().find(|name| **name == physical).copied()
 }
 
 /// Letters, digits, punctuation and numpad keys by their position, so `Ctrl+Ф` on a Cyrillic
@@ -287,6 +388,46 @@ mod tests {
     }
 
     #[test]
+    fn media_keys_need_no_modifier() {
+        assert_eq!(format_hotkey("", "MediaPlayPause", false, false, false, false).as_deref(), Some("MediaPlayPause"));
+        assert_eq!(
+            format_hotkey("", "AudioVolumeUp", true, false, false, false).as_deref(),
+            Some("Ctrl+AudioVolumeUp")
+        );
+        assert_eq!(
+            format_hotkey("", "MediaTrackPrevious", false, false, false, false).as_deref(),
+            Some("MediaTrackPrevious")
+        );
+        assert_eq!(format_hotkey("", "Fn", false, false, false, false), None);
+        assert_eq!(
+            format_hotkey(MEDIA_KEY_TEXT, "AudioVolumeUp", true, false, false, false).as_deref(),
+            Some("Ctrl+AudioVolumeUp")
+        );
+    }
+
+    #[test]
+    fn formats_mouse_buttons() {
+        assert_eq!(format_mouse_hotkey(4, false, false, false, false).as_deref(), Some("Mouse4"));
+        assert_eq!(format_mouse_hotkey(5, true, false, true, false).as_deref(), Some("Ctrl+Shift+Mouse5"));
+        assert_eq!(format_mouse_hotkey(3, false, true, false, false).as_deref(), Some("Alt+Mouse3"));
+        // Bare middle click, and left / right buttons.
+        assert_eq!(format_mouse_hotkey(3, false, false, false, false), None);
+        assert_eq!(format_mouse_hotkey(1, true, false, false, false), None);
+        assert_eq!(format_mouse_hotkey(2, true, false, false, false), None);
+        assert_eq!(format_mouse_hotkey(6, true, false, false, false).as_deref(), Some("Ctrl+WheelUp"));
+        assert_eq!(format_mouse_hotkey(7, false, false, false, false), None);
+    }
+
+    #[test]
+    fn mouse_bindings() {
+        let records = vec![record("1", "Ctrl+Mouse4", "game.exe", true), record("2", "Ctrl+Mouse4", "x.exe", true)];
+        let (map, keys) = bindings_for(&records);
+        assert_eq!(keys.len(), 1);
+        assert!(matches!(keys[0].1, Trigger::Mouse(_)));
+        assert_eq!(map.targets(&keys[0].1).len(), 2);
+    }
+
+    #[test]
     fn formatted_hotkeys_parse() {
         for text in [
             "Ctrl+F1",
@@ -297,6 +438,11 @@ mod tests {
             "Ctrl+Shift+Up",
             "Ctrl+Numpad5",
             "Alt+NumpadDecimal",
+            "MediaPlayPause",
+            "Ctrl+AudioVolumeMute",
+            "MediaTrackNext",
+            "BrowserBack",
+            "LaunchMail",
         ] {
             assert!(HotKey::from_str(text).is_ok(), "{text}");
         }
@@ -326,7 +472,7 @@ mod tests {
         let (map, keys) = bindings_for(&records);
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0].0, "Ctrl+F1");
-        let targets = &map[&keys[0].1.id()];
+        let targets = map.targets(&keys[0].1);
         assert_eq!(targets.len(), 2);
         assert_eq!(targets[0], Target { process: "game.exe".into(), action: Action::Toggle { min: 0.1, max: 0.8 } });
         assert_eq!(targets[1].process, "discord.exe");
@@ -353,7 +499,7 @@ mod tests {
         let (map, keys) = bindings_for(std::slice::from_ref(&r));
         let names: Vec<&str> = keys.iter().map(|(t, _)| t.as_str()).collect();
         assert_eq!(names, ["Ctrl+Up", "Ctrl+Down", "Ctrl+M"]);
-        let action = |i: usize| map[&keys[i].1.id()][0].action.clone();
+        let action = |i: usize| map.targets(&keys[i].1)[0].action.clone();
         assert_eq!(action(0), Action::Step(0.1));
         assert_eq!(action(1), Action::Step(-0.1));
         assert_eq!(action(2), Action::Mute);

@@ -15,7 +15,7 @@ and Linux. Goals: small memory footprint, instant start, no web view.
 |---|---|---|
 | UI | [Slint](https://slint.dev) 1.19, `renderer-software` + `backend-winit`, style `fluent` | No GPU context or browser engine; ~30 MB RSS |
 | Tray | Slint's `SystemTrayIcon` on Windows/macOS; own `ksni` StatusNotifierItem on Linux (`src/tray.rs`) | Slint's Linux tray registers on D-Bus synchronously on the UI thread and could hang startup |
-| Hotkeys | `global-hotkey` | Windows / macOS / X11 |
+| Hotkeys | `global-hotkey` (keys, media keys); own hook in `src/mouse.rs` for mouse buttons | Windows / macOS / X11 |
 | Audio | WASAPI (`windows`), PulseAudio (`libpulse-binding`), Core Audio process taps (`objc2-core-audio`) | Native per-app volume |
 | HTTP | `ureq` — native TLS on Windows/macOS, rustls on Linux | Avoids OpenSSL version coupling on Linux |
 | Updater | own code in `src/updater.rs` over GitHub Releases | No installer framework needed |
@@ -29,7 +29,8 @@ ui/app.slint          All UI: AppWindow (records / settings / about pages), Tray
 src/main.rs           Wiring: UI thread state (`App`, reached via `with_app`), callbacks, timers, updater flow
 src/config.rs         `Config` / `Record`, JSON at <config_dir>/apps-volume-control/config.json, legacy import
 src/i18n.rs           Translations (en / uk / ru) → `Tr` properties; `translations!` table
-src/hotkeys.rs        Hotkey registration, record → hotkey bindings, key-capture formatting
+src/hotkeys.rs        Hotkey registration, record → hotkey bindings, key / media key / mouse capture formatting
+src/mouse.rs          Mouse-button and wheel hotkeys (`Ctrl+Mouse4`, `Ctrl+WheelUp`): WH_MOUSE_LL / X11 button grabs / CGEventTap
 src/audio/mod.rs      `VolumeBackend` trait, worker thread, `AudioHandle` commands, toggle logic
 src/audio/windows.rs  WASAPI sessions of all active render devices, grouped by exe name
 src/audio/linux.rs    PulseAudio/PipeWire sink inputs + connected clients, grouped by `application.process.binary`
@@ -140,5 +141,10 @@ Add tests for any new pure logic; keep platform FFI thin so the logic around it 
 - Linux global hotkeys need X11 (no Wayland global-shortcut portal yet).
 - "Always on top" under Wayland works only on KDE (KWin script); other Wayland compositors have no API for it.
 - Hotkey capture maps Latin letters/digits/F-keys; keys typed on a non-Latin layout are ignored.
+- Slint drops key presses without text, which media keys are; `wire_callbacks` re-sends them to the focused
+  hotkey field as `hotkeys::MEDIA_KEY_TEXT`. Keys the desktop grabs itself (often bare Volume Up/Down) never
+  reach the window. macOS media keys are not seen by the window.
+- Mouse hotkeys: middle and wheel (both need a modifier), back and forward buttons. The hook starts on first use; on
+  macOS it needs the Accessibility permission, otherwise those hotkeys show as unavailable.
 - macOS process taps require 14.2+; the app's audio is re-played through the default output device, so
   device switches are picked up on the next refresh (≤ 2 s while the window is open, otherwise on next toggle).

@@ -21,7 +21,8 @@
 
 - **Per-app volume** — pick an application that plays audio and set its minimum and maximum volume.
 - **Global hotkeys** — one press switches the app between its minimum and maximum. Any combination can be
-  recorded (`Ctrl+F1`, `Alt+Shift+M`, …); several records may share one hotkey.
+  recorded (`Ctrl+F1`, `Alt+Shift+M`, …), including media keys and mouse buttons (`Ctrl+Mouse4`); several
+  records may share one hotkey.
 - **Live mixer** — current volume of every record with a slider and a “Toggle” button.
 - **Tray** — keeps running in the system tray so hotkeys work with the window closed.
 - **Start with system**, start minimized, always on top, dark / light / system theme.

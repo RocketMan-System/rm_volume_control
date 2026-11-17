@@ -129,7 +129,12 @@ translations! {
     set_field_refresh => ["Refresh", "Оновити", "Обновить"],
     set_field_hotkey => ["Hotkey", "Гаряча клавіша", "Горячая клавиша"],
     set_hotkey_record => ["Record", "Записати", "Записать"],
-    set_hotkey_press => ["Press a key combination…", "Натисніть комбінацію клавіш…", "Нажмите комбинацию клавиш…"],
+    set_hotkey_press => ["Press keys or a mouse button…", "Натисніть клавіші або кнопку миші…", "Нажмите клавиши или кнопку мыши…"],
+    set_hotkey_no_wheel => [
+        "Wheel and middle button don't work under Wayland",
+        "Коліщатко й середня кнопка не працюють у Wayland",
+        "Колесо и средняя кнопка не работают в Wayland"
+    ],
     set_hotkey_clear => ["Clear", "Очистити", "Очистить"],
     set_field_min => ["Minimum volume", "Мінімальна гучність", "Минимальная громкость"],
     set_field_max => ["Maximum volume", "Максимальна гучність", "Максимальная громкость"],

@@ -13,6 +13,7 @@ mod icons;
 mod instance;
 #[cfg(target_os = "linux")]
 mod keep_above;
+mod mouse;
 mod tray;
 mod updater;
 
@@ -454,13 +455,24 @@ fn install_update() {
 fn wire_callbacks(ui: &AppWindow) {
     use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
     // Runs before Slint dispatches the key, so `hotkey_captured` sees the key of its own press.
-    ui.window().on_winit_window_event(|_, event| {
+    let weak = ui.as_weak();
+    ui.window().on_winit_window_event(move |_, event| {
         if let winit::event::WindowEvent::KeyboardInput { event, .. } = event {
             if event.state.is_pressed() {
                 let name = match event.physical_key {
                     winit::keyboard::PhysicalKey::Code(code) => format!("{code:?}"),
                     _ => String::new(),
                 };
+                if hotkeys::is_media_key(&name) {
+                    // Slint drops it (no text): hand a stand-in to the focused hotkey field.
+                    let weak = weak.clone();
+                    slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                        let Some(ui) = weak.upgrade() else { return };
+                        let text = slint::SharedString::from(hotkeys::MEDIA_KEY_TEXT);
+                        ui.window().dispatch_event(slint::platform::WindowEvent::KeyPressed { text: text.clone() });
+                        ui.window().dispatch_event(slint::platform::WindowEvent::KeyReleased { text });
+                    });
+                }
                 PHYSICAL_KEY.set(name);
             }
         }
@@ -525,6 +537,14 @@ fn wire_callbacks(ui: &AppWindow) {
     ui.on_hotkey_captured(|id, slot, text, ctrl, alt, shift, meta| {
         let physical = PHYSICAL_KEY.with_borrow(Clone::clone);
         let Some(hotkey) = hotkeys::format_hotkey(&text, &physical, ctrl, alt, shift, meta) else { return false };
+        with_app(|app| app.update_record(&id, |r| *hotkey_slot(r, slot) = Some(hotkey)));
+        true
+    });
+    ui.on_hotkey_mouse_captured(|id, slot, button, ctrl, alt, shift, meta| {
+        if mouse::Button::from_number(button).is_some_and(|b| !mouse::supported(b)) {
+            return false;
+        }
+        let Some(hotkey) = hotkeys::format_mouse_hotkey(button, ctrl, alt, shift, meta) else { return false };
         with_app(|app| app.update_record(&id, |r| *hotkey_slot(r, slot) = Some(hotkey)));
         true
     });
@@ -679,6 +699,7 @@ fn main() -> Result<(), slint::PlatformError> {
     if cfg.lock_top {
         keep_above::set(true);
     }
+    ui.global::<HotkeyCaps>().set_wheel(mouse::supported(mouse::Button::WheelUp));
     ui.set_close_to_tray(cfg.close_to_tray);
     ui.set_autostart(cfg.autostart);
     ui.set_start_minimized(cfg.start_minimized);

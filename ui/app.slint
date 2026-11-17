@@ -71,7 +71,8 @@ export global Tr {
     in property <string> field-refresh: "Refresh";
     in property <string> field-hotkey: "Hotkey";
     in property <string> hotkey-record: "Record";
-    in property <string> hotkey-press: "Press a key combination…";
+    in property <string> hotkey-press: "Press keys or a mouse button…";
+    in property <string> hotkey-no-wheel: "Wheel and middle button don't work under Wayland";
     in property <string> hotkey-clear: "Clear";
     in property <string> field-min: "Minimum volume";
     in property <string> field-max: "Maximum volume";
@@ -129,6 +130,11 @@ export global Tr {
 // Volume limits, set from Rust: 150 while KDE's "Raise maximum volume" is on, else 100.
 export global Limits {
     in property <int> max-volume: 100;
+}
+
+// What global hotkeys this session supports, set from Rust: no middle button or wheel under Wayland.
+export global HotkeyCaps {
+    in property <bool> wheel: true;
 }
 
 // Design tokens: a dark indigo look with an orange "flame" second accent, plus a light variant.
@@ -1185,7 +1191,12 @@ component Stat inherits Rectangle {
 component HotkeyRecorder inherits FieldBox {
     in property <string> value;
     out property <bool> recording: fs.has-focus;
+    // The middle button or the wheel was pressed where they can't be hotkeys.
+    property <bool> rejected;
+    changed recording => { self.rejected = false; }
     callback captured(string, bool, bool, bool, bool) -> bool;
+    // Mouse button number (3 middle, 4 back, 5 forward, 6 / 7 wheel up / down) and modifiers.
+    callback mouse-captured(int, bool, bool, bool, bool) -> bool;
     callback cleared();
     focused: root.recording;
     hovered: ta.has-hover;
@@ -1223,8 +1234,8 @@ component HotkeyRecorder inherits FieldBox {
         if root.recording: Text {
             horizontal-stretch: 1;
             vertical-alignment: center;
-            text: Tr.hotkey-press;
-            color: Theme.accent-text;
+            text: root.rejected ? Tr.hotkey-no-wheel : Tr.hotkey-press;
+            color: root.rejected ? Theme.warn : Theme.accent-text;
             overflow: elide;
         }
         if !root.recording && root.value != "": VerticalLayout {
@@ -1253,6 +1264,40 @@ component HotkeyRecorder inherits FieldBox {
             icon: Icons.x;
             enabled: root.value != "";
             clicked => { root.cleared(); }
+        }
+    }
+    // While recording, the whole field takes mouse buttons and the wheel: middle and side
+    // buttons become the hotkey, a left click stops recording.
+    if root.recording: TouchArea {
+        mouse-cursor: pointer;
+        scroll-event(event) => {
+            if (event.delta-y != 0 && !HotkeyCaps.wheel) {
+                root.rejected = true;
+                return accept;
+            }
+            if (event.delta-y != 0 && root.mouse-captured(event.delta-y > 0 ? 6 : 7, event.modifiers.control, event.modifiers.alt, event.modifiers.shift, event.modifiers.meta)) {
+                fs.clear-focus();
+            }
+            accept
+        }
+        pointer-event(event) => {
+            if (event.kind != PointerEventKind.down) {
+                return;
+            }
+            if (event.button == PointerEventButton.left) {
+                fs.clear-focus();
+                return;
+            }
+            let n = event.button == PointerEventButton.middle ? 3
+                : event.button == PointerEventButton.back ? 4
+                : event.button == PointerEventButton.forward ? 5 : 0;
+            if (n == 3 && !HotkeyCaps.wheel) {
+                root.rejected = true;
+                return;
+            }
+            if (n != 0 && root.mouse-captured(n, event.modifiers.control, event.modifiers.alt, event.modifiers.shift, event.modifiers.meta)) {
+                fs.clear-focus();
+            }
         }
     }
 }
@@ -1298,6 +1343,7 @@ component RecordCard inherits Card {
     callback refresh-processes();
     // The int is the hotkey slot: 0 toggle, 1 volume up, 2 volume down, 3 mute.
     callback hotkey-captured(int, string, bool, bool, bool, bool) -> bool;
+    callback hotkey-mouse-captured(int, int, bool, bool, bool, bool) -> bool;
     callback hotkey-cleared(int);
     callback set-min(int);
     callback set-max(int);
@@ -1569,6 +1615,7 @@ component RecordCard inherits Card {
                     HotkeyRecorder {
                         value: root.data.hotkey;
                         captured(t, c, a, s, m) => { return root.hotkey-captured(0, t, c, a, s, m); }
+                        mouse-captured(b, c, a, s, m) => { return root.hotkey-mouse-captured(0, b, c, a, s, m); }
                         cleared => { root.hotkey-cleared(0); }
                     }
                 }
@@ -1583,6 +1630,7 @@ component RecordCard inherits Card {
                     HotkeyRecorder {
                         value: root.data.hotkey-up;
                         captured(t, c, a, s, m) => { return root.hotkey-captured(1, t, c, a, s, m); }
+                        mouse-captured(b, c, a, s, m) => { return root.hotkey-mouse-captured(1, b, c, a, s, m); }
                         cleared => { root.hotkey-cleared(1); }
                     }
                 }
@@ -1591,6 +1639,7 @@ component RecordCard inherits Card {
                     HotkeyRecorder {
                         value: root.data.hotkey-down;
                         captured(t, c, a, s, m) => { return root.hotkey-captured(2, t, c, a, s, m); }
+                        mouse-captured(b, c, a, s, m) => { return root.hotkey-mouse-captured(2, b, c, a, s, m); }
                         cleared => { root.hotkey-cleared(2); }
                     }
                 }
@@ -1616,6 +1665,7 @@ component RecordCard inherits Card {
                     HotkeyRecorder {
                         value: root.data.hotkey-mute;
                         captured(t, c, a, s, m) => { return root.hotkey-captured(3, t, c, a, s, m); }
+                        mouse-captured(b, c, a, s, m) => { return root.hotkey-mouse-captured(3, b, c, a, s, m); }
                         cleared => { root.hotkey-cleared(3); }
                     }
                 }
@@ -1722,6 +1772,7 @@ export component AppWindow inherits Window {
     callback set-process(string, int);
     callback refresh-processes();
     callback hotkey-captured(string, int, string, bool, bool, bool, bool) -> bool;
+    callback hotkey-mouse-captured(string, int, int, bool, bool, bool, bool) -> bool;
     callback hotkey-cleared(string, int);
     callback set-min(string, int);
     callback set-max(string, int);
@@ -2123,6 +2174,7 @@ export component AppWindow inherits Window {
                             set-process(v) => { root.set-process(rec.id, v); }
                             refresh-processes => { root.refresh-processes(); root.begin-edit(rec.id); }
                             hotkey-captured(slot, t, c, a, s, m) => { return root.hotkey-captured(rec.id, slot, t, c, a, s, m); }
+                            hotkey-mouse-captured(slot, b, c, a, s, m) => { return root.hotkey-mouse-captured(rec.id, slot, b, c, a, s, m); }
                             hotkey-cleared(slot) => { root.hotkey-cleared(rec.id, slot); }
                             set-min(v) => { root.set-min(rec.id, v); }
                             set-max(v) => { root.set-max(rec.id, v); }
