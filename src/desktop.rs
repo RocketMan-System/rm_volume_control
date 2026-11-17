@@ -97,10 +97,11 @@ fn find_entries(dirs: &[PathBuf], own_entry: &Path, image: &Path) -> (bool, Opti
 pub fn state() -> i32 {
     let (Some(image), Some(data)) = (appimage(), data_home()) else { return UNAVAILABLE };
     match find_entries(&application_dirs(), &entry_path(&data), &image) {
-        (ours, Some(_)) => {
+        (ours, Some(other)) => {
             if ours {
                 remove_own(&data);
             }
+            refresh_foreign_icon(&other, &data);
             OTHER
         }
         (true, None) => {
@@ -140,6 +141,35 @@ fn write_entry(image: &Path, data: &Path) {
         + "\n";
     write_if_changed(&icon, ICON);
     write_if_changed(&entry_path(data), entry.as_bytes());
+}
+
+/// The icon file of a .desktop entry: an absolute `Icon=` path, or a name looked up in the
+/// user's hicolor theme. Only PNG files under `data` (ours to change) are returned.
+fn entry_icon_file(entry: &str, data: &Path) -> Option<PathBuf> {
+    let icon = entry.lines().find_map(|l| l.trim().strip_prefix("Icon="))?.trim();
+    let path = if Path::new(icon).is_absolute() {
+        PathBuf::from(icon)
+    } else {
+        let sizes = std::fs::read_dir(data.join("icons/hicolor")).ok()?;
+        sizes.flatten().map(|d| d.path().join("apps").join(format!("{icon}.png"))).find(|p| p.is_file())?
+    };
+    let png = path.extension().is_some_and(|e| e == "png");
+    (png && path.is_file() && path.starts_with(data)).then_some(path)
+}
+
+/// Another tool (AppImageLauncher, Gear Lever) copied our icon when it registered the AppImage.
+/// Keeps that copy current after an update, as we do for our own entry.
+fn refresh_foreign_icon(entry: &Path, data: &Path) {
+    let Ok(text) = std::fs::read_to_string(entry) else { return };
+    let Some(icon) = entry_icon_file(&text, data) else { return };
+    if std::fs::read(&icon).is_ok_and(|old| old == ICON) {
+        return;
+    }
+    write_if_changed(&icon, ICON);
+    // KDE and GTK cache icons per theme and recheck them when the theme folder changes.
+    if let Ok(dir) = std::fs::File::open(data.join("icons/hicolor")) {
+        let _ = dir.set_modified(std::time::SystemTime::now());
+    }
 }
 
 fn remove_own(data: &Path) {
@@ -200,5 +230,24 @@ mod tests {
         std::fs::write(&own, "Exec=/home/u/.local/bin/apps-volume-control\n").unwrap();
         assert!(!find_entries(&dirs, &own, &image).0);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn finds_foreign_entry_icon() {
+        let data = std::env::temp_dir().join(format!("avc-icon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let apps = data.join("icons/hicolor/256x256/apps");
+        std::fs::create_dir_all(&apps).unwrap();
+        let png = apps.join("appimagekit_0123_apps-volume-control.png");
+        std::fs::write(&png, "old").unwrap();
+        std::fs::write(apps.join("svg-icon.svg"), "").unwrap();
+
+        let by_name = "Icon=appimagekit_0123_apps-volume-control\n";
+        assert_eq!(entry_icon_file(by_name, &data), Some(png.clone()));
+        assert_eq!(entry_icon_file(&format!("Icon={}\n", png.display()), &data), Some(png));
+        assert_eq!(entry_icon_file("Icon=svg-icon\n", &data), None);
+        assert_eq!(entry_icon_file("Icon=/usr/share/pixmaps/app.png\n", &data), None);
+        assert_eq!(entry_icon_file("Name=x\n", &data), None);
+        let _ = std::fs::remove_dir_all(&data);
     }
 }

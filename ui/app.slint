@@ -1759,7 +1759,7 @@ export component AppWindow inherits Window {
                     spacing: 10px;
                     alignment: root.compact ? center : start;
                     Image {
-                        source: @image-url("../assets/64x64.png");
+                        source: @image-url("../assets/logo.svg");
                         width: 32px;
                         height: 32px;
                     }
@@ -2284,7 +2284,7 @@ export component AppWindow inherits Window {
                                             background: @radial-gradient(circle, Theme.flame.with-alpha(0.22) 0%, Theme.accent.with-alpha(0.10) 45%, transparent 70%);
                                         }
                                         Image {
-                                            source: @image-url("../assets/icon256.png");
+                                            source: @image-url("../assets/icon.svg");
                                             width: 80px;
                                             height: 80px;
                                         }
@@ -2422,7 +2422,7 @@ export component AppWindow inherits Window {
 }
 
 export component TrayIcon inherits SystemTrayIcon {
-    icon: @image-url("../assets/64x64.png");
+    icon: @image-url("../assets/tray.png");
     tooltip: "Apps Volume Control";
     title: "Apps Volume Control";
     callback show-window();

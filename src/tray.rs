@@ -34,7 +34,7 @@ mod linux {
     use ksni::menu::StandardItem;
     use std::sync::{Arc, Mutex};
 
-    const ICON_PNG: &[u8] = include_bytes!("../assets/64x64.png");
+    const ICON_PNG: &[u8] = include_bytes!("../assets/tray.png");
 
     struct Sni {
         icon: Option<ksni::Icon>,
@@ -163,8 +163,10 @@ mod linux {
             let icon = super::decode_icon(super::ICON_PNG).expect("icon decodes");
             assert_eq!((icon.width, icon.height), (64, 64));
             assert_eq!(icon.data.len(), 64 * 64 * 4);
-            // The icon is opaque: alpha is the first byte of every ARGB pixel.
-            assert!(icon.data.as_chunks::<4>().0.iter().all(|p| p[0] == 255));
+            // Alpha is the first byte of every ARGB pixel: transparent corner, opaque body.
+            let pixels = icon.data.as_chunks::<4>().0;
+            assert_eq!(pixels[0][0], 0);
+            assert!(pixels.iter().any(|p| p[0] == 255));
         }
     }
 }
