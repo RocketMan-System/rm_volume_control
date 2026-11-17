@@ -34,6 +34,7 @@ src/audio/mod.rs      `VolumeBackend` trait, worker thread, `AudioHandle` comman
 src/audio/windows.rs  WASAPI sessions of all active render devices, grouped by exe name
 src/audio/linux.rs    PulseAudio/PipeWire sink inputs + connected clients, grouped by `application.process.binary`
 src/audio/macos.rs    Process taps + private aggregate device + IO proc that applies gain
+src/icons.rs          App icons: cache in <cache_dir>/apps-volume-control/icons, freedesktop theme lookup (Linux)
 src/autostart.rs      Registry Run key / XDG autostart / LaunchAgent, always with `--minimized`
 src/desktop.rs        Linux app_id; AppImage menu entry + icon (prompt / Settings), respects AppImageLauncher entries
 src/tray.rs           Tray wrapper: Slint TrayIcon (Win/macOS) or ksni on a background thread (Linux)
@@ -115,6 +116,7 @@ Unit tests live next to the code (`#[cfg(test)] mod tests`):
 - `updater` — version comparison, checksum parsing, shell/AppleScript quoting, the macOS swap script
   (executed with `sh`, including the rollback path).
 - `main` — `record_row` (record + live audio state → UI row).
+- `icons` — icon cache store/lookup; `.desktop` parsing, systemd-scope desktop ids, entry matching (Linux).
 - `audio::linux` — `#[ignore]` integration test against the real audio server.
 
 Add tests for any new pure logic; keep platform FFI thin so the logic around it stays testable.

@@ -9,6 +9,7 @@ mod config;
 mod desktop;
 mod hotkeys;
 mod i18n;
+mod icons;
 mod instance;
 mod tray;
 mod updater;
@@ -18,7 +19,7 @@ use config::{Config, Record};
 use hotkeys::Hotkeys;
 use slint::{CloseRequestResponse, ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
@@ -46,6 +47,10 @@ struct App {
     failed_hotkeys: HashSet<String>,
     /// Process keys behind the entries of the process combo box ("" = none).
     edit_keys: Vec<String>,
+    /// Loaded icon per process key (`None`: no icon). Filled lazily from the icon cache.
+    icons: RefCell<HashMap<String, Option<slint::Image>>>,
+    /// Keys whose icon was refreshed by the audio worker in this session.
+    live_icons: HashSet<String>,
     refresh_edit_list: bool,
     release: Option<updater::Release>,
     downloaded: Option<PathBuf>,
@@ -86,6 +91,15 @@ fn show_window(ui: &AppWindow) {
     ui.window().set_minimized(false);
 }
 
+/// Letter shown in place of a missing icon.
+fn initial(label: &str) -> SharedString {
+    label.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().collect::<String>()).unwrap_or_default().into()
+}
+
+fn load_icon(path: &std::path::Path) -> Option<slint::Image> {
+    slint::Image::load_from_path(path).ok().filter(|i| i.size().width > 0)
+}
+
 /// Builds the row shown for `record`, merged with the live audio state.
 fn record_row(record: &Record, apps: &[AudioApp], failed: &HashSet<String>) -> RecordData {
     let process = record.process.clone().unwrap_or_default();
@@ -106,13 +120,43 @@ fn record_row(record: &Record, apps: &[AudioApp], failed: &HashSet<String>) -> R
         max: record.max(),
         enabled: record.status,
         volume: app.filter(|a| a.active).map(|a| (a.volume * 100.0).round() as i32).unwrap_or(-1),
+        icon: slint::Image::default(),
+        initial: initial(app.map(|a| a.title.as_str()).unwrap_or(&process)),
     }
 }
 
 impl App {
+    /// Icon of a process key: the one found in this session, else the cached one.
+    fn icon(&self, key: &str) -> slint::Image {
+        if key.is_empty() {
+            return slint::Image::default();
+        }
+        let mut icons = self.icons.borrow_mut();
+        let icon = icons.entry(key.to_string()).or_insert_with(|| icons::cached(key).and_then(|p| load_icon(&p)));
+        icon.clone().unwrap_or_default()
+    }
+
+    /// Loads icons the audio worker resolved, replacing older cached ones once per session.
+    fn load_live_icons(&mut self) {
+        for app in &self.apps {
+            let Some(path) = &app.icon else { continue };
+            if self.live_icons.insert(app.key.clone()) {
+                self.icons.borrow_mut().insert(app.key.clone(), load_icon(path));
+            }
+        }
+    }
+
     fn render(&self) {
-        let rows: Vec<RecordData> =
-            self.cfg.records.iter().map(|r| record_row(r, &self.apps, &self.failed_hotkeys)).collect();
+        let rows: Vec<RecordData> = self
+            .cfg
+            .records
+            .iter()
+            .map(|r| {
+                let mut row = record_row(r, &self.apps, &self.failed_hotkeys);
+                row.icon = self.icon(&row.process);
+                row
+            })
+            .collect();
         // Update rows in place so open editors keep their focus and state.
         for (i, row) in rows.iter().enumerate() {
             if i < self.records.row_count() {
@@ -158,15 +202,16 @@ impl App {
     fn build_edit_list(&mut self, id: &str) {
         let tr = self.ui.global::<Tr>();
         let current = self.cfg.records.iter().find(|r| r.id == id).and_then(|r| r.process.clone());
-        let mut labels: Vec<SharedString> = Vec::new();
+        let mut items: Vec<ProcessItem> = Vec::new();
         let mut keys: Vec<String> = Vec::new();
         match &current {
             None => {
-                labels.push(tr.get_no_process());
+                items.push(ProcessItem { label: tr.get_no_process(), ..Default::default() });
                 keys.push(String::new());
             }
             Some(p) if !self.apps.iter().any(|a| &a.key == p) => {
-                labels.push(format!("{p} [{}]", tr.get_process_closed()).into());
+                let label = format!("{p} [{}]", tr.get_process_closed()).into();
+                items.push(ProcessItem { label, icon: self.icon(p), initial: initial(p) });
                 keys.push(p.clone());
             }
             _ => {}
@@ -176,11 +221,11 @@ impl App {
             if !a.active {
                 label = format!("{label} · {}", tr.get_process_idle());
             }
-            labels.push(label.into());
+            items.push(ProcessItem { label: label.into(), icon: self.icon(&a.key), initial: initial(&a.title) });
             keys.push(a.key.clone());
         }
         let index = current.as_ref().and_then(|p| keys.iter().position(|k| k == p)).unwrap_or(0);
-        self.ui.set_process_labels(ModelRc::new(VecModel::from(labels)));
+        self.ui.set_process_items(ModelRc::new(VecModel::from(items)));
         self.ui.set_process_index(index as i32);
         self.edit_keys = keys;
     }
@@ -219,6 +264,7 @@ fn on_audio_event(event: audio::Event) {
                 audio::Event::Apps(apps) => {
                     app.audio_error = None;
                     app.apps = apps;
+                    app.load_live_icons();
                 }
                 audio::Event::Unavailable(err) => app.audio_error = Some(err),
             }
@@ -384,6 +430,7 @@ fn wire_callbacks(ui: &AppWindow) {
                     r.name = title;
                 }
             });
+            app.ui.set_process_index(index);
         });
     });
     ui.on_refresh_processes(|| {
@@ -554,6 +601,8 @@ fn main() -> Result<(), slint::PlatformError> {
             hotkeys,
             failed_hotkeys: HashSet::new(),
             edit_keys: Vec::new(),
+            icons: RefCell::default(),
+            live_icons: HashSet::new(),
             refresh_edit_list: false,
             release: None,
             downloaded: None,
@@ -614,9 +663,9 @@ mod tests {
 
     fn apps() -> Vec<AudioApp> {
         vec![
-            AudioApp { key: "game.exe".into(), title: "My Game".into(), volume: 0.42, active: true },
-            AudioApp { key: "bare.exe".into(), title: "bare.exe".into(), volume: 1.0, active: true },
-            AudioApp { key: "quiet".into(), title: "Quiet App".into(), volume: 0.3, active: false },
+            AudioApp { key: "game.exe".into(), title: "My Game".into(), volume: 0.42, active: true, icon: None },
+            AudioApp { key: "bare.exe".into(), title: "bare.exe".into(), volume: 1.0, active: true, icon: None },
+            AudioApp { key: "quiet".into(), title: "Quiet App".into(), volume: 0.3, active: false, icon: None },
         ]
     }
 
@@ -669,6 +718,18 @@ mod tests {
         let row = record_row(&r, &apps(), &HashSet::new());
         assert!(row.running);
         assert_eq!(row.volume, -1);
+    }
+
+    #[test]
+    fn initials_for_missing_icons() {
+        assert_eq!(initial("discord").as_str(), "D");
+        assert_eq!(initial("  [beta] app").as_str(), "B");
+        assert_eq!(initial("ß").as_str(), "SS");
+        assert_eq!(initial("").as_str(), "");
+        let r = Record { id: "6".into(), process: Some("game.exe".into()), ..Default::default() };
+        assert_eq!(record_row(&r, &apps(), &HashSet::new()).initial.as_str(), "M", "from the live title");
+        let r = Record { id: "7".into(), process: Some("closed.exe".into()), ..Default::default() };
+        assert_eq!(record_row(&r, &apps(), &HashSet::new()).initial.as_str(), "C");
     }
 
     #[test]

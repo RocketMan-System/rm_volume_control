@@ -2,6 +2,9 @@
 //! thread (COM apartments, the PulseAudio main loop and CoreAudio taps all prefer a
 //! single owning thread); the rest of the app talks to it through [`AudioHandle`].
 
+use crate::icons;
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -32,12 +35,18 @@ pub struct AudioApp {
     /// Has an open audio stream right now. Quiet apps (Linux) are listed so they can be
     /// picked, but their volume is only applied once they start playing.
     pub active: bool,
+    /// Icon found for this app in the current session (see [`crate::icons`]).
+    pub icon: Option<PathBuf>,
 }
 
 /// Operations every platform backend implements.
 pub trait VolumeBackend {
     fn list(&mut self) -> Vec<AudioApp>;
     fn set_volume(&mut self, key: &str, volume: f32) -> bool;
+    /// Icon of an app returned by the last `list`. Called once per app and session.
+    fn icon(&mut self, _key: &str) -> Option<icons::Source> {
+        None
+    }
 }
 
 enum Cmd {
@@ -116,7 +125,9 @@ fn worker<B: VolumeBackend>(rx: Receiver<Cmd>, make: impl Fn() -> Result<B, Stri
         }
     };
 
-    let mut apps = backend.list();
+    // Icon resolution is slow-ish (file system, shell APIs), so it runs once per app.
+    let mut icon_paths: HashMap<String, Option<PathBuf>> = HashMap::new();
+    let mut apps = list(&mut backend, &mut icon_paths);
     on_event(Event::Apps(apps.clone()));
 
     while let Ok(first) = rx.recv() {
@@ -137,7 +148,7 @@ fn worker<B: VolumeBackend>(rx: Receiver<Cmd>, make: impl Fn() -> Result<B, Stri
                 Cmd::Toggle { key, min, max } => {
                     // Toggling must act on the real current volume, so flush first.
                     flush(&mut backend, &mut apps, &mut pending_volumes);
-                    apps = backend.list();
+                    apps = list(&mut backend, &mut icon_paths);
                     if let Some(app) = apps.iter().find(|a| a.key == key) {
                         let target = toggle_target(app.volume, min, max);
                         pending_volumes.push((key, target));
@@ -147,10 +158,21 @@ fn worker<B: VolumeBackend>(rx: Receiver<Cmd>, make: impl Fn() -> Result<B, Stri
         }
         flush(&mut backend, &mut apps, &mut pending_volumes);
         if needs_refresh {
-            apps = backend.list();
+            apps = list(&mut backend, &mut icon_paths);
         }
         on_event(Event::Apps(apps.clone()));
     }
+}
+
+fn list<B: VolumeBackend>(backend: &mut B, icon_paths: &mut HashMap<String, Option<PathBuf>>) -> Vec<AudioApp> {
+    let mut apps = backend.list();
+    for app in &mut apps {
+        let path = icon_paths
+            .entry(app.key.clone())
+            .or_insert_with(|| backend.icon(&app.key).and_then(|source| icons::store(&app.key, source)));
+        app.icon = path.clone();
+    }
+    apps
 }
 
 fn flush<B: VolumeBackend>(backend: &mut B, apps: &mut [AudioApp], pending: &mut Vec<(String, f32)>) {
@@ -205,7 +227,7 @@ mod tests {
     }
 
     fn app(key: &str, volume: f32) -> AudioApp {
-        AudioApp { key: key.into(), title: key.to_uppercase(), volume, active: true }
+        AudioApp { key: key.into(), title: key.to_uppercase(), volume, active: true, icon: None }
     }
 
     fn start(mock: &Mock) -> (AudioHandle, JoinHandle<()>, Receiver<Vec<AudioApp>>) {

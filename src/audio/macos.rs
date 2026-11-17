@@ -6,13 +6,15 @@
 //! down so an untouched app has zero overhead.
 
 use super::{AudioApp, VolumeBackend};
+use crate::icons;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{AnyThread, Message};
+use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSWorkspace};
 use objc2_core_audio::*;
 use objc2_core_audio_types::{AudioBuffer, AudioBufferList, AudioTimeStamp};
 use objc2_core_foundation::CFDictionary;
-use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString, NSUUID};
+use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSPoint, NSRect, NSSize, NSString, NSUUID};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::{size_of, MaybeUninit};
@@ -116,6 +118,7 @@ struct Process {
     object: AudioObjectID,
     key: String,
     title: String,
+    path: String,
 }
 
 fn processes() -> Vec<Process> {
@@ -138,7 +141,7 @@ fn processes() -> Vec<Process> {
         if key.is_empty() {
             continue;
         }
-        out.push(Process { object, key, title });
+        out.push(Process { object, key, title, path });
     }
     out
 }
@@ -381,7 +384,7 @@ impl VolumeBackend for Backend {
                 continue;
             }
             let volume = self.gains.get(&p.key).copied().unwrap_or(1.0);
-            apps.push(AudioApp { key: p.key.clone(), title: p.title.clone(), volume, active: true });
+            apps.push(AudioApp { key: p.key.clone(), title: p.title.clone(), volume, active: true, icon: None });
         }
         apps.sort_by_key(|a| a.title.to_lowercase());
         apps
@@ -398,4 +401,24 @@ impl VolumeBackend for Backend {
         }
         self.sync_tap(key)
     }
+
+    fn icon(&mut self, key: &str) -> Option<icons::Source> {
+        let path = &self.procs.iter().find(|p| p.key == key && p.path.contains(".app/"))?.path;
+        app_icon(bundle_path(path))
+    }
+}
+
+/// `/Applications/Foo.app/Contents/MacOS/foo` → `/Applications/Foo.app`.
+fn bundle_path(path: &str) -> &str {
+    path.find(".app/").map(|i| &path[..i + 4]).unwrap_or(path)
+}
+
+/// Finder icon of a bundle rendered at 64×64 and encoded as PNG.
+fn app_icon(bundle: &str) -> Option<icons::Source> {
+    let image = NSWorkspace::sharedWorkspace().iconForFile(&NSString::from_str(bundle));
+    let mut rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(64.0, 64.0));
+    let cg = unsafe { image.CGImageForProposedRect_context_hints(&mut rect, None, None) }?;
+    let rep = NSBitmapImageRep::initWithCGImage(NSBitmapImageRep::alloc(), &cg);
+    let png = unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) }?;
+    Some(icons::Source::Png(png.to_vec()))
 }

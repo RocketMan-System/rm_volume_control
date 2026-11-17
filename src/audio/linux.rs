@@ -6,6 +6,7 @@
 //! and applied to its next stream.
 
 use super::{AudioApp, VolumeBackend};
+use crate::icons::{self, freedesktop};
 use libpulse_binding as pulse;
 use pulse::callbacks::ListResult;
 use pulse::context::{Context, FlagSet, State};
@@ -22,12 +23,40 @@ struct SinkInput {
     key: String,
     title: String,
     volume: ChannelVolumes,
+    icon: AppIcon,
+}
+
+/// Icon hints an app registered with the sound server.
+#[derive(Clone, Default)]
+struct AppIcon {
+    name: Option<String>,
+    pid: Option<u32>,
+}
+
+impl AppIcon {
+    fn from_proplist(props: &Proplist) -> Self {
+        Self {
+            name: props.get_str(properties::APPLICATION_ICON_NAME).filter(|n| !n.is_empty()),
+            pid: props.get_str(properties::APPLICATION_PROCESS_ID).and_then(|p| p.parse().ok()),
+        }
+    }
+
+    /// Keeps the first known value of every hint.
+    fn merge(&mut self, other: &AppIcon) {
+        if self.name.is_none() {
+            self.name = other.name.clone();
+        }
+        if self.pid.is_none() {
+            self.pid = other.pid;
+        }
+    }
 }
 
 /// An application connected to the sound server, possibly without a playing stream.
 struct Client {
     key: String,
     title: String,
+    icon: AppIcon,
 }
 
 /// Sound-server internals and desktop helpers that are never worth controlling.
@@ -69,7 +98,7 @@ fn merge(streams: &[SinkInput], clients: &[Client], pending: &HashMap<String, f3
             continue;
         }
         let volume = (s.volume.avg().0 as f32 / Volume::NORMAL.0 as f32).min(1.0);
-        apps.push(AudioApp { key: s.key.clone(), title: s.title.clone(), volume, active: true });
+        apps.push(AudioApp { key: s.key.clone(), title: s.title.clone(), volume, active: true, icon: None });
     }
     for c in clients {
         if let Some(app) = apps.iter_mut().find(|a| a.key == c.key) {
@@ -79,7 +108,7 @@ fn merge(streams: &[SinkInput], clients: &[Client], pending: &HashMap<String, f3
             continue;
         }
         let volume = pending.get(&c.key).copied().unwrap_or(1.0);
-        apps.push(AudioApp { key: c.key.clone(), title: c.title.clone(), volume, active: false });
+        apps.push(AudioApp { key: c.key.clone(), title: c.title.clone(), volume, active: false, icon: None });
     }
     apps.sort_by(|a, b| b.active.cmp(&a.active).then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase())));
     apps
@@ -163,7 +192,8 @@ impl Backend {
             let Some(key) = binary.clone().or_else(|| app_name.clone()) else { return };
             let title =
                 app_name.or_else(|| info.proplist.get_str(properties::MEDIA_NAME)).unwrap_or_else(|| key.clone());
-            sink.borrow_mut().push(SinkInput { index: info.index, key, title, volume: info.volume });
+            let icon = AppIcon::from_proplist(&info.proplist);
+            sink.borrow_mut().push(SinkInput { index: info.index, key, title, volume: info.volume, icon });
         });
         if self.wait(op) {
             self.streams = found.take();
@@ -185,11 +215,16 @@ impl Backend {
             }
             let title = info.proplist.get_str(properties::APPLICATION_NAME).filter(|t| !t.is_empty());
             let title = title.unwrap_or_else(|| key.clone());
+            let icon = AppIcon::from_proplist(&info.proplist);
             let mut list = sink.borrow_mut();
             match list.iter_mut().find(|c| c.key == key) {
-                Some(c) if better_title(&c.title, &title, &key) => c.title = title,
-                Some(_) => {}
-                None => list.push(Client { key, title }),
+                Some(c) => {
+                    c.icon.merge(&icon);
+                    if better_title(&c.title, &title, &key) {
+                        c.title = title;
+                    }
+                }
+                None => list.push(Client { key, title, icon }),
             }
         });
         if self.wait(op) {
@@ -255,6 +290,23 @@ impl VolumeBackend for Backend {
         // A quiet app has no stream yet: the volume is applied when it starts playing.
         self.apply_volume(key, volume) || self.clients.iter().any(|c| c.key == key)
     }
+
+    fn icon(&mut self, key: &str) -> Option<icons::Source> {
+        let mut hints = AppIcon::default();
+        let mut title = key.to_string();
+        for s in self.streams.iter().filter(|s| s.key == key) {
+            hints.merge(&s.icon);
+            title = s.title.clone();
+        }
+        for c in self.clients.iter().filter(|c| c.key == key) {
+            hints.merge(&c.icon);
+            if better_title(&title, &c.title, key) {
+                title = c.title.clone();
+            }
+        }
+        let hints = freedesktop::Hints { binary: key, title: &title, icon_name: hints.name.as_deref(), pid: hints.pid };
+        freedesktop::find(&hints).map(icons::Source::File)
+    }
 }
 
 #[cfg(test)]
@@ -270,6 +322,13 @@ mod tests {
         let apps = backend.list();
         eprintln!("{apps:#?}");
         for app in &apps {
+            let icon = backend.icon(&app.key).map(|s| match s {
+                icons::Source::File(p) => p,
+                _ => unreachable!(),
+            });
+            eprintln!("{} → {icon:?}", app.key);
+        }
+        for app in &apps {
             assert!((0.0..=1.0).contains(&app.volume));
             assert!(backend.set_volume(&app.key, app.volume));
         }
@@ -279,11 +338,11 @@ mod tests {
     fn stream(index: u32, key: &str, title: &str, volume: f32) -> SinkInput {
         let mut cv = ChannelVolumes::default();
         cv.set(2, Volume((volume * Volume::NORMAL.0 as f32) as u32));
-        SinkInput { index, key: key.into(), title: title.into(), volume: cv }
+        SinkInput { index, key: key.into(), title: title.into(), volume: cv, icon: AppIcon::default() }
     }
 
     fn client(key: &str, title: &str) -> Client {
-        Client { key: key.into(), title: title.into() }
+        Client { key: key.into(), title: title.into(), icon: AppIcon::default() }
     }
 
     #[test]
