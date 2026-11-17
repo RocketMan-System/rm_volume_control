@@ -115,6 +115,24 @@ translations! {
     set_hotkey_clear => ["Clear", "Очистити", "Очистить"],
     set_field_min => ["Minimum volume", "Мінімальна гучність", "Минимальная громкость"],
     set_field_max => ["Maximum volume", "Максимальна гучність", "Максимальная громкость"],
+    set_field_mode => ["Mode", "Режим", "Режим"],
+    set_mode_toggle => ["Switch between volumes", "Перемикання між рівнями", "Переключение между уровнями"],
+    set_mode_adjust => ["Change volume", "Зміна гучності", "Изменение громкости"],
+    set_field_hotkey_up => ["Volume up", "Гучніше", "Громче"],
+    set_field_hotkey_down => ["Volume down", "Тихіше", "Тише"],
+    set_field_hotkey_mute => ["Mute / unmute", "Вимк. / увімк. звук", "Выкл. / вкл. звук"],
+    set_field_step => ["Step", "Крок", "Шаг"],
+    set_adjust_hint => [
+        "Set volume up and down hotkeys, a mute hotkey, or both",
+        "Задайте клавіші «гучніше» і «тихіше», клавішу вимкнення звуку або все разом",
+        "Задайте клавиши «громче» и «тише», клавишу выключения звука или всё вместе"
+    ],
+    set_hotkeys_incomplete => [
+        "Volume up and down hotkeys only work together: set both",
+        "Клавіші «гучніше» і «тихіше» працюють лише разом: задайте обидві",
+        "Клавиши «громче» и «тише» работают только вместе: задайте обе"
+    ],
+    set_mute => ["Mute / unmute", "Вимк. / увімк. звук", "Выкл. / вкл. звук"],
     set_update_available => ["Update available", "Доступне оновлення", "Доступно обновление"],
     set_update_download => ["Download", "Завантажити", "Скачать"],
     set_update_downloading => ["Downloading…", "Завантаження…", "Скачивание…"],

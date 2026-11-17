@@ -53,6 +53,8 @@ enum Cmd {
     Refresh,
     SetVolume(String, f32),
     Toggle { key: String, min: f32, max: f32 },
+    Step { key: String, delta: f32 },
+    Mute(String),
     Shutdown,
 }
 
@@ -73,6 +75,16 @@ impl AudioHandle {
         let _ = self.0.send(Cmd::Toggle { key: key.to_string(), min, max });
     }
 
+    /// Changes the volume of `key` by `delta` (-1.0 ..= 1.0).
+    pub fn step(&self, key: &str, delta: f32) {
+        let _ = self.0.send(Cmd::Step { key: key.to_string(), delta });
+    }
+
+    /// Mutes `key`, or restores the volume it had before it was muted.
+    pub fn mute(&self, key: &str) {
+        let _ = self.0.send(Cmd::Mute(key.to_string()));
+    }
+
     /// Asks the worker to drop the backend (restoring tapped apps on macOS) and exit.
     pub fn shutdown(&self) {
         let _ = self.0.send(Cmd::Shutdown);
@@ -85,6 +97,21 @@ pub fn toggle_target(current: f32, min: f32, max: f32) -> f32 {
         min
     } else {
         max
+    }
+}
+
+/// Volume after a step, kept on whole percents so repeated steps don't drift.
+pub fn step_target(current: f32, delta: f32) -> f32 {
+    ((current * 100.0).round() + (delta * 100.0).round()).clamp(0.0, 100.0) / 100.0
+}
+
+/// Volume after a mute press and what to remember for the next one: a playing app goes to 0
+/// and its volume is remembered; a silent one gets the remembered volume back (100% if none).
+pub fn mute_target(current: f32, remembered: Option<f32>) -> (f32, Option<f32>) {
+    if current > 0.0 {
+        (0.0, Some(current))
+    } else {
+        (remembered.filter(|v| *v > 0.0).unwrap_or(1.0), None)
     }
 }
 
@@ -129,6 +156,8 @@ fn worker<B: VolumeBackend>(rx: Receiver<Cmd>, make: impl Fn() -> Result<B, Stri
     let mut icon_paths: HashMap<String, Option<PathBuf>> = HashMap::new();
     let mut apps = list(&mut backend, &mut icon_paths);
     on_event(Event::Apps(apps.clone()));
+    // Volume of each muted app before it was muted.
+    let mut unmute_volumes: HashMap<String, f32> = HashMap::new();
 
     while let Ok(first) = rx.recv() {
         // Coalesce bursts (e.g. dragging a slider) so only the latest value per app is applied.
@@ -136,6 +165,9 @@ fn worker<B: VolumeBackend>(rx: Receiver<Cmd>, make: impl Fn() -> Result<B, Stri
         cmds.extend(rx.try_iter());
 
         let mut needs_refresh = false;
+        // Hotkey actions read the real current volume once per batch; later ones in the
+        // same batch build on the values flushed in between (fast key repeat).
+        let mut listed = false;
         let mut pending_volumes: Vec<(String, f32)> = Vec::new();
         for cmd in cmds {
             match cmd {
@@ -146,11 +178,43 @@ fn worker<B: VolumeBackend>(rx: Receiver<Cmd>, make: impl Fn() -> Result<B, Stri
                     pending_volumes.push((key, vol));
                 }
                 Cmd::Toggle { key, min, max } => {
-                    // Toggling must act on the real current volume, so flush first.
-                    flush(&mut backend, &mut apps, &mut pending_volumes);
-                    apps = list(&mut backend, &mut icon_paths);
-                    if let Some(app) = apps.iter().find(|a| a.key == key) {
-                        let target = toggle_target(app.volume, min, max);
+                    if let Some(current) = current_volume(
+                        &mut backend,
+                        &mut apps,
+                        &mut pending_volumes,
+                        &mut icon_paths,
+                        &mut listed,
+                        &key,
+                    ) {
+                        pending_volumes.push((key, toggle_target(current, min, max)));
+                    }
+                }
+                Cmd::Step { key, delta } => {
+                    if let Some(current) = current_volume(
+                        &mut backend,
+                        &mut apps,
+                        &mut pending_volumes,
+                        &mut icon_paths,
+                        &mut listed,
+                        &key,
+                    ) {
+                        pending_volumes.push((key, step_target(current, delta)));
+                    }
+                }
+                Cmd::Mute(key) => {
+                    if let Some(current) = current_volume(
+                        &mut backend,
+                        &mut apps,
+                        &mut pending_volumes,
+                        &mut icon_paths,
+                        &mut listed,
+                        &key,
+                    ) {
+                        let (target, remember) = mute_target(current, unmute_volumes.get(&key).copied());
+                        match remember {
+                            Some(v) => unmute_volumes.insert(key.clone(), v),
+                            None => unmute_volumes.remove(&key),
+                        };
                         pending_volumes.push((key, target));
                     }
                 }
@@ -162,6 +226,24 @@ fn worker<B: VolumeBackend>(rx: Receiver<Cmd>, make: impl Fn() -> Result<B, Stri
         }
         on_event(Event::Apps(apps.clone()));
     }
+}
+
+/// Current volume of `key` for a hotkey action. Flushes pending changes first and lists the
+/// mixer once per batch (`listed`).
+fn current_volume<B: VolumeBackend>(
+    backend: &mut B,
+    apps: &mut Vec<AudioApp>,
+    pending: &mut Vec<(String, f32)>,
+    icon_paths: &mut HashMap<String, Option<PathBuf>>,
+    listed: &mut bool,
+    key: &str,
+) -> Option<f32> {
+    flush(backend, apps, pending);
+    if !*listed {
+        *apps = list(backend, icon_paths);
+        *listed = true;
+    }
+    apps.iter().find(|a| a.key == key).map(|a| a.volume)
 }
 
 fn list<B: VolumeBackend>(backend: &mut B, icon_paths: &mut HashMap<String, Option<PathBuf>>) -> Vec<AudioApp> {
@@ -199,6 +281,24 @@ mod tests {
         assert_eq!(toggle_target(0.55, 0.2, 1.0), 1.0);
         assert_eq!(toggle_target(0.5, 0.2, 0.8), 0.8); // equal distance → max
         assert_eq!(toggle_target(0.0, 0.3, 0.3), 0.3);
+    }
+
+    #[test]
+    fn step_stays_in_range_and_on_whole_percents() {
+        assert_eq!(step_target(0.5, 0.05), 0.55);
+        assert_eq!(step_target(0.98, 0.05), 1.0);
+        assert_eq!(step_target(0.03, -0.05), 0.0);
+        assert_eq!(step_target(0.333, 0.1), 0.43);
+    }
+
+    #[test]
+    fn mute_remembers_the_volume() {
+        assert_eq!(mute_target(0.6, None), (0.0, Some(0.6)));
+        assert_eq!(mute_target(0.0, Some(0.6)), (0.6, None));
+        // Nothing remembered (muted before start): back to full volume.
+        assert_eq!(mute_target(0.0, None), (1.0, None));
+        // Raised by hand after muting: mute again and remember the new volume.
+        assert_eq!(mute_target(0.2, Some(0.6)), (0.0, Some(0.2)));
     }
 
     /// In-memory mixer that records every volume change.
@@ -279,6 +379,26 @@ mod tests {
         handle.toggle("missing.exe", 0.0, 1.0);
         next(&rx);
         assert!(mock.sets.lock().unwrap().iter().all(|(k, _)| k == "game.exe"));
+
+        handle.shutdown();
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn step_and_mute_change_the_volume() {
+        let mock = Mock::default();
+        mock.apps.lock().unwrap().push(app("game.exe", 0.5));
+        let (handle, join, rx) = start(&mock);
+        next(&rx);
+
+        handle.step("game.exe", 0.1);
+        assert_eq!(next(&rx)[0].volume, 0.6);
+        handle.step("game.exe", -0.25);
+        assert_eq!(next(&rx)[0].volume, 0.35);
+        handle.mute("game.exe");
+        assert_eq!(next(&rx)[0].volume, 0.0);
+        handle.mute("game.exe");
+        assert_eq!(next(&rx)[0].volume, 0.35);
 
         handle.shutdown();
         join.join().unwrap();

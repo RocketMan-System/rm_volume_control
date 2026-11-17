@@ -14,8 +14,24 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone, Debug, PartialEq)]
 pub struct Target {
     pub process: String,
-    pub min: f32,
-    pub max: f32,
+    pub action: Action,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Action {
+    Toggle { min: f32, max: f32 },
+    Step(f32),
+    Mute,
+}
+
+impl Target {
+    pub fn run(&self, audio: &AudioHandle) {
+        match self.action {
+            Action::Toggle { min, max } => audio.toggle(&self.process, min, max),
+            Action::Step(delta) => audio.step(&self.process, delta),
+            Action::Mute => audio.mute(&self.process),
+        }
+    }
 }
 
 /// Targets of every registered hotkey, keyed by hotkey id.
@@ -46,7 +62,7 @@ impl Hotkeys {
             }
             if let Some(targets) = map.lock().unwrap().get(&event.id()) {
                 for t in targets {
-                    audio.toggle(&t.process, t.min, t.max);
+                    t.run(&audio);
                 }
             }
         }));
@@ -84,18 +100,35 @@ pub fn bindings_for(records: &[Record]) -> (TargetMap, Vec<(String, HotKey)>) {
     let mut map: TargetMap = HashMap::new();
     let mut keys: Vec<(String, HotKey)> = Vec::new();
     for r in records.iter().filter(|r| r.status) {
-        let (Some(text), Some(process)) = (r.hotkey.as_deref(), r.process.as_deref()) else { continue };
-        let Ok(hotkey) = HotKey::from_str(text) else { continue };
-        if !keys.iter().any(|(_, k)| k.id() == hotkey.id()) {
-            keys.push((text.to_string(), hotkey));
+        let Some(process) = r.process.as_deref() else { continue };
+        for (text, action) in actions(r) {
+            let Ok(hotkey) = HotKey::from_str(text) else { continue };
+            if !keys.iter().any(|(_, k)| k.id() == hotkey.id()) {
+                keys.push((text.to_string(), hotkey));
+            }
+            map.entry(hotkey.id()).or_default().push(Target { process: process.to_string(), action });
         }
-        map.entry(hotkey.id()).or_default().push(Target {
-            process: process.to_string(),
-            min: r.min() as f32 / 100.0,
-            max: r.max() as f32 / 100.0,
-        });
     }
     (map, keys)
+}
+
+/// Hotkeys of a record with what they do, by the record's mode.
+fn actions(r: &Record) -> Vec<(&str, Action)> {
+    if !r.adjust_mode() {
+        let toggle = Action::Toggle { min: r.min() as f32 / 100.0, max: r.max() as f32 / 100.0 };
+        return r.hotkey.as_deref().map(|h| (h, toggle)).into_iter().collect();
+    }
+    let step = r.step() as f32 / 100.0;
+    let mut list = Vec::new();
+    // Up and down only work together.
+    if let (Some(up), Some(down)) = (r.hotkey_up.as_deref(), r.hotkey_down.as_deref()) {
+        list.push((up, Action::Step(step)));
+        list.push((down, Action::Step(-step)));
+    }
+    if let Some(mute) = r.hotkey_mute.as_deref() {
+        list.push((mute, Action::Mute));
+    }
+    list
 }
 
 /// Turns a key press captured by the UI into a hotkey string such as `Ctrl+Shift+F5`.
@@ -255,7 +288,16 @@ mod tests {
 
     #[test]
     fn formatted_hotkeys_parse() {
-        for text in ["Ctrl+F1", "Shift+F12", "Alt+F5", "Ctrl+Alt+A", "Super+Space", "Ctrl+Shift+Up", "Ctrl+Numpad5", "Alt+NumpadDecimal"] {
+        for text in [
+            "Ctrl+F1",
+            "Shift+F12",
+            "Alt+F5",
+            "Ctrl+Alt+A",
+            "Super+Space",
+            "Ctrl+Shift+Up",
+            "Ctrl+Numpad5",
+            "Alt+NumpadDecimal",
+        ] {
             assert!(HotKey::from_str(text).is_ok(), "{text}");
         }
     }
@@ -286,7 +328,34 @@ mod tests {
         assert_eq!(keys[0].0, "Ctrl+F1");
         let targets = &map[&keys[0].1.id()];
         assert_eq!(targets.len(), 2);
-        assert_eq!(targets[0], Target { process: "game.exe".into(), min: 0.1, max: 0.8 });
+        assert_eq!(targets[0], Target { process: "game.exe".into(), action: Action::Toggle { min: 0.1, max: 0.8 } });
         assert_eq!(targets[1].process, "discord.exe");
+    }
+
+    #[test]
+    fn adjust_mode_bindings() {
+        let mut r = Record {
+            id: "1".into(),
+            process: Some("game.exe".into()),
+            status: true,
+            mode: crate::config::MODE_ADJUST,
+            hotkey: Some("Ctrl+F1".into()),
+            hotkey_up: Some("Ctrl+Up".into()),
+            step: Some(10.0),
+            ..Default::default()
+        };
+        // The toggle hotkey is ignored and up alone is incomplete.
+        let (map, keys) = bindings_for(std::slice::from_ref(&r));
+        assert!(map.is_empty() && keys.is_empty());
+
+        r.hotkey_down = Some("Ctrl+Down".into());
+        r.hotkey_mute = Some("Ctrl+M".into());
+        let (map, keys) = bindings_for(std::slice::from_ref(&r));
+        let names: Vec<&str> = keys.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(names, ["Ctrl+Up", "Ctrl+Down", "Ctrl+M"]);
+        let action = |i: usize| map[&keys[i].1.id()][0].action.clone();
+        assert_eq!(action(0), Action::Step(0.1));
+        assert_eq!(action(1), Action::Step(-0.1));
+        assert_eq!(action(2), Action::Mute);
     }
 }

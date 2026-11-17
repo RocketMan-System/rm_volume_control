@@ -15,7 +15,22 @@ pub struct Record {
     pub hotkey: Option<String>,
     /// Whether the hotkey of this record is active.
     pub status: bool,
+    /// 0 (default): each hotkey press switches between `min` and `max`; or [`MODE_ADJUST`].
+    pub mode: i32,
+    /// Adjust mode: raise / lower the volume by `step` (work only as a pair).
+    pub hotkey_up: Option<String>,
+    pub hotkey_down: Option<String>,
+    /// Adjust mode: mute / unmute.
+    pub hotkey_mute: Option<String>,
+    /// Adjust mode: volume change per press, in percent.
+    pub step: Option<f64>,
 }
+
+/// Hotkeys raise / lower the volume by a step and mute / unmute it.
+pub const MODE_ADJUST: i32 = 1;
+
+pub const DEFAULT_STEP: i32 = 5;
+pub const MAX_STEP: i32 = 50;
 
 impl Record {
     pub fn min(&self) -> i32 {
@@ -24,6 +39,27 @@ impl Record {
 
     pub fn max(&self) -> i32 {
         self.max.unwrap_or(100.0).round().clamp(0.0, 100.0) as i32
+    }
+
+    pub fn step(&self) -> i32 {
+        self.step.map_or(DEFAULT_STEP, |s| s.round().clamp(1.0, MAX_STEP as f64) as i32)
+    }
+
+    pub fn adjust_mode(&self) -> bool {
+        self.mode == MODE_ADJUST
+    }
+
+    /// Hotkeys that are in effect for the record's mode. Up/down count only as a pair.
+    pub fn active_hotkeys(&self) -> Vec<&str> {
+        if !self.adjust_mode() {
+            return self.hotkey.as_deref().into_iter().collect();
+        }
+        let mut keys = Vec::new();
+        if let (Some(up), Some(down)) = (self.hotkey_up.as_deref(), self.hotkey_down.as_deref()) {
+            keys.extend([up, down]);
+        }
+        keys.extend(self.hotkey_mute.as_deref());
+        keys
     }
 }
 
@@ -152,6 +188,29 @@ mod tests {
         assert_eq!((r.min(), r.max()), (0, 100));
         let r = Record { min: Some(33.6), ..Default::default() };
         assert_eq!(r.min(), 34);
+        assert_eq!(r.step(), DEFAULT_STEP);
+        let r = Record { step: Some(0.2), ..Default::default() };
+        assert_eq!(r.step(), 1);
+        let r = Record { step: Some(80.0), ..Default::default() };
+        assert_eq!(r.step(), MAX_STEP);
+    }
+
+    #[test]
+    fn active_hotkeys_follow_mode() {
+        let mut r = Record {
+            hotkey: Some("Ctrl+F1".into()),
+            hotkey_up: Some("Ctrl+Up".into()),
+            hotkey_mute: Some("Ctrl+M".into()),
+            ..Default::default()
+        };
+        assert_eq!(r.active_hotkeys(), vec!["Ctrl+F1"]);
+        r.mode = MODE_ADJUST;
+        // Up without down does nothing.
+        assert_eq!(r.active_hotkeys(), vec!["Ctrl+M"]);
+        r.hotkey_down = Some("Ctrl+Down".into());
+        assert_eq!(r.active_hotkeys(), vec!["Ctrl+Up", "Ctrl+Down", "Ctrl+M"]);
+        r.hotkey_mute = None;
+        assert_eq!(r.active_hotkeys(), vec!["Ctrl+Up", "Ctrl+Down"]);
     }
 
     #[test]
@@ -162,8 +221,10 @@ mod tests {
         let text = serde_json::to_string(&cfg).unwrap();
         assert!(text.contains("\"lockTop\""));
         assert!(text.contains("\"closeToTray\""));
+        assert!(text.contains("\"hotkeyUp\""));
         let back: Config = serde_json::from_str(&text).unwrap();
         assert_eq!(back.theme, 2);
+        assert_eq!(back.records[0].mode, 0);
         assert_eq!(back.records[0].name.as_deref(), Some("A"));
     }
 

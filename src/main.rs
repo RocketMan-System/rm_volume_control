@@ -34,6 +34,34 @@ const UPDATE_DOWNLOADING: i32 = 2;
 const UPDATE_READY: i32 = 3;
 const UPDATE_ERROR: i32 = 4;
 
+// Hotkey slots of a record, as passed by `hotkey-captured` / `hotkey-cleared` in ui/app.slint
+// (0 = the toggle hotkey).
+const SLOT_UP: i32 = 1;
+const SLOT_DOWN: i32 = 2;
+const SLOT_MUTE: i32 = 3;
+
+fn hotkey_slot(record: &mut Record, slot: i32) -> &mut Option<String> {
+    match slot {
+        SLOT_UP => &mut record.hotkey_up,
+        SLOT_DOWN => &mut record.hotkey_down,
+        SLOT_MUTE => &mut record.hotkey_mute,
+        _ => &mut record.hotkey,
+    }
+}
+
+/// Hotkeys of a record for the header chip, e.g. `Ctrl+Up / Ctrl+Down · Ctrl+M` ("" = none).
+fn hotkey_label(record: &Record) -> String {
+    if !record.adjust_mode() {
+        return record.hotkey.clone().unwrap_or_default();
+    }
+    let mut parts = Vec::new();
+    if let (Some(up), Some(down)) = (&record.hotkey_up, &record.hotkey_down) {
+        parts.push(format!("{up} / {down}"));
+    }
+    parts.extend(record.hotkey_mute.clone());
+    parts.join(" · ")
+}
+
 /// Everything owned by the UI thread. Slint callbacks reach it through [`with_app`].
 struct App {
     ui: AppWindow,
@@ -105,6 +133,9 @@ fn record_row(record: &Record, apps: &[AudioApp], failed: &HashSet<String>) -> R
     let process = record.process.clone().unwrap_or_default();
     let app = apps.iter().find(|a| !process.is_empty() && a.key == process);
     let hotkey = record.hotkey.clone().unwrap_or_default();
+    let active = record.active_hotkeys();
+    // Adjust mode needs both up and down, or mute: a lone up/down key does nothing.
+    let incomplete = record.adjust_mode() && (record.hotkey_up.is_some() != record.hotkey_down.is_some());
     RecordData {
         id: record.id.as_str().into(),
         name: record.name.clone().unwrap_or_default().into(),
@@ -114,8 +145,15 @@ fn record_row(record: &Record, apps: &[AudioApp], failed: &HashSet<String>) -> R
             _ => process.as_str().into(),
         },
         running: app.is_some(),
-        hotkey_error: record.status && !hotkey.is_empty() && failed.contains(&hotkey),
+        hotkey_error: record.status && active.iter().any(|h| failed.contains(*h)),
         hotkey: hotkey.into(),
+        hotkey_up: record.hotkey_up.clone().unwrap_or_default().into(),
+        hotkey_down: record.hotkey_down.clone().unwrap_or_default().into(),
+        hotkey_mute: record.hotkey_mute.clone().unwrap_or_default().into(),
+        hotkey_label: hotkey_label(record).into(),
+        hotkeys_incomplete: incomplete,
+        mode: record.mode,
+        step: record.step(),
         min: record.min(),
         max: record.max(),
         enabled: record.status,
@@ -439,14 +477,20 @@ fn wire_callbacks(ui: &AppWindow) {
             app.audio.refresh();
         });
     });
-    ui.on_hotkey_captured(|id, text, ctrl, alt, shift, meta| {
+    ui.on_hotkey_captured(|id, slot, text, ctrl, alt, shift, meta| {
         let physical = PHYSICAL_KEY.with_borrow(Clone::clone);
         let Some(hotkey) = hotkeys::format_hotkey(&text, &physical, ctrl, alt, shift, meta) else { return false };
-        with_app(|app| app.update_record(&id, |r| r.hotkey = Some(hotkey)));
+        with_app(|app| app.update_record(&id, |r| *hotkey_slot(r, slot) = Some(hotkey)));
         true
     });
-    ui.on_hotkey_cleared(|id| {
-        with_app(|app| app.update_record(&id, |r| r.hotkey = None));
+    ui.on_hotkey_cleared(|id, slot| {
+        with_app(|app| app.update_record(&id, |r| *hotkey_slot(r, slot) = None));
+    });
+    ui.on_set_mode(|id, mode| {
+        with_app(|app| app.update_record(&id, |r| r.mode = mode));
+    });
+    ui.on_set_step(|id, v| {
+        with_app(|app| app.update_record(&id, |r| r.step = Some(v as f64)));
     });
     ui.on_set_min(|id, v| {
         with_app(|app| app.update_record(&id, |r| r.min = Some(v as f64)));
@@ -465,7 +509,11 @@ fn wire_callbacks(ui: &AppWindow) {
         with_app(|app| {
             if let Some(r) = app.cfg.records.iter().find(|r| r.id == id.as_str()) {
                 if let Some(p) = &r.process {
-                    app.audio.toggle(p, r.min() as f32 / 100.0, r.max() as f32 / 100.0);
+                    if r.adjust_mode() {
+                        app.audio.mute(p);
+                    } else {
+                        app.audio.toggle(p, r.min() as f32 / 100.0, r.max() as f32 / 100.0);
+                    }
                 }
             }
         });
@@ -679,6 +727,7 @@ mod tests {
             min: Some(20.0),
             max: Some(90.0),
             status: true,
+            ..Default::default()
         };
         let row = record_row(&r, &apps(), &HashSet::new());
         assert!(row.running);
@@ -730,6 +779,32 @@ mod tests {
         assert_eq!(record_row(&r, &apps(), &HashSet::new()).initial.as_str(), "M", "from the live title");
         let r = Record { id: "7".into(), process: Some("closed.exe".into()), ..Default::default() };
         assert_eq!(record_row(&r, &apps(), &HashSet::new()).initial.as_str(), "C");
+    }
+
+    #[test]
+    fn row_for_adjust_mode() {
+        let mut r = Record {
+            id: "8".into(),
+            mode: config::MODE_ADJUST,
+            hotkey: Some("Ctrl+F1".into()),
+            hotkey_up: Some("Ctrl+Up".into()),
+            hotkey_mute: Some("Ctrl+M".into()),
+            status: true,
+            ..Default::default()
+        };
+        // The toggle hotkey of the other mode doesn't count, a lone "up" is flagged.
+        let failed: HashSet<String> = ["Ctrl+F1".to_string(), "Ctrl+Up".to_string()].into();
+        let row = record_row(&r, &apps(), &failed);
+        assert!(row.hotkeys_incomplete);
+        assert!(!row.hotkey_error);
+        assert_eq!(row.hotkey_label.as_str(), "Ctrl+M");
+        assert_eq!(row.step, config::DEFAULT_STEP);
+
+        r.hotkey_down = Some("Ctrl+Down".into());
+        let row = record_row(&r, &apps(), &failed);
+        assert!(!row.hotkeys_incomplete);
+        assert!(row.hotkey_error);
+        assert_eq!(row.hotkey_label.as_str(), "Ctrl+Up / Ctrl+Down · Ctrl+M");
     }
 
     #[test]

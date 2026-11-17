@@ -8,6 +8,17 @@ export struct RecordData {
     running: bool,
     hotkey: string,
     hotkey-error: bool,
+    // Adjust mode (mode 1): volume up / down / mute hotkeys and the step in percent.
+    hotkey-up: string,
+    hotkey-down: string,
+    hotkey-mute: string,
+    // All active hotkeys of the record for the header ("" = none).
+    hotkey-label: string,
+    // Only one of up/down is set, so neither works.
+    hotkeys-incomplete: bool,
+    // 0 = switch between min and max, 1 = adjust volume
+    mode: int,
+    step: int,
     min: int,
     max: int,
     enabled: bool,
@@ -54,6 +65,16 @@ export global Tr {
     in property <string> hotkey-clear: "Clear";
     in property <string> field-min: "Minimum volume";
     in property <string> field-max: "Maximum volume";
+    in property <string> field-mode: "Mode";
+    in property <string> mode-toggle: "Switch between volumes";
+    in property <string> mode-adjust: "Change volume";
+    in property <string> field-hotkey-up: "Volume up";
+    in property <string> field-hotkey-down: "Volume down";
+    in property <string> field-hotkey-mute: "Mute / unmute";
+    in property <string> field-step: "Step";
+    in property <string> adjust-hint: "Set volume up and down hotkeys, a mute hotkey, or both";
+    in property <string> hotkeys-incomplete: "Volume up and down only work together";
+    in property <string> mute: "Mute / unmute";
     in property <string> update-available: "Update available";
     in property <string> update-download: "Download";
     in property <string> update-downloading: "Downloading…";
@@ -363,10 +384,15 @@ component RecordCard inherits Card {
     callback set-name(string);
     callback set-process(int);
     callback refresh-processes();
-    callback hotkey-captured(string, bool, bool, bool, bool) -> bool;
-    callback hotkey-cleared();
+    // The int is the hotkey slot: 0 toggle, 1 volume up, 2 volume down, 3 mute.
+    callback hotkey-captured(int, string, bool, bool, bool, bool) -> bool;
+    callback hotkey-cleared(int);
     callback set-min(int);
     callback set-max(int);
+    callback set-mode(int);
+    callback set-step(int);
+
+    property <bool> adjust: root.data.mode == 1;
 
     VerticalLayout {
         padding: 12px;
@@ -411,8 +437,8 @@ component RecordCard inherits Card {
             VerticalLayout {
                 alignment: center;
                 Chip {
-                    text: root.data.hotkey != "" ? root.data.hotkey : Tr.no-hotkey;
-                    tint: root.data.hotkey-error ? #e05050 : (root.data.hotkey != "" ? Palette.accent-background : #808080);
+                    text: root.data.hotkey-label != "" ? root.data.hotkey-label : Tr.no-hotkey;
+                    tint: root.data.hotkey-error ? #e05050 : (root.data.hotkey-label != "" ? Palette.accent-background : #808080);
                 }
             }
             VerticalLayout {
@@ -429,11 +455,16 @@ component RecordCard inherits Card {
             font-size: 11px;
             color: #e05050;
         }
+        if root.data.hotkeys-incomplete: Text {
+            text: Tr.hotkeys-incomplete;
+            font-size: 11px;
+            color: #e0a030;
+        }
 
         HorizontalLayout {
             spacing: 8px;
             Text {
-                text: "\{root.data.min}%";
+                text: root.adjust ? "0%" : "\{root.data.min}%";
                 vertical-alignment: center;
                 font-size: 11px;
                 color: Palette.foreground.with-alpha(0.6);
@@ -448,7 +479,7 @@ component RecordCard inherits Card {
                 changed(v) => { root.set-volume(round(v)); }
             }
             Text {
-                text: "\{root.data.max}%";
+                text: root.adjust ? "100%" : "\{root.data.max}%";
                 vertical-alignment: center;
                 font-size: 11px;
                 color: Palette.foreground.with-alpha(0.6);
@@ -459,7 +490,7 @@ component RecordCard inherits Card {
             spacing: 6px;
             alignment: end;
             Button {
-                text: Tr.toggle;
+                text: root.adjust ? Tr.mute : Tr.toggle;
                 enabled: root.data.running;
                 clicked => { root.toggle-now(); }
             }
@@ -518,15 +549,74 @@ component RecordCard inherits Card {
                 }
             }
             FieldRow {
+                label: Tr.field-mode;
+                ComboBox {
+                    horizontal-stretch: 1;
+                    model: [Tr.mode-toggle, Tr.mode-adjust];
+                    current-index: root.data.mode;
+                    selected => { root.set-mode(self.current-index); }
+                }
+            }
+            if !root.adjust: FieldRow {
                 label: Tr.field-hotkey;
                 HotkeyRecorder {
                     horizontal-stretch: 1;
                     value: root.data.hotkey;
-                    captured(t, c, a, s, m) => { return root.hotkey-captured(t, c, a, s, m); }
-                    cleared => { root.hotkey-cleared(); }
+                    captured(t, c, a, s, m) => { return root.hotkey-captured(0, t, c, a, s, m); }
+                    cleared => { root.hotkey-cleared(0); }
                 }
             }
-            FieldRow {
+            if root.adjust: Text {
+                text: Tr.adjust-hint;
+                font-size: 11px;
+                wrap: word-wrap;
+                color: Palette.foreground.with-alpha(0.6);
+            }
+            if root.adjust: FieldRow {
+                label: Tr.field-hotkey-up;
+                HotkeyRecorder {
+                    horizontal-stretch: 1;
+                    value: root.data.hotkey-up;
+                    captured(t, c, a, s, m) => { return root.hotkey-captured(1, t, c, a, s, m); }
+                    cleared => { root.hotkey-cleared(1); }
+                }
+            }
+            if root.adjust: FieldRow {
+                label: Tr.field-hotkey-down;
+                HotkeyRecorder {
+                    horizontal-stretch: 1;
+                    value: root.data.hotkey-down;
+                    captured(t, c, a, s, m) => { return root.hotkey-captured(2, t, c, a, s, m); }
+                    cleared => { root.hotkey-cleared(2); }
+                }
+            }
+            if root.adjust: FieldRow {
+                label: Tr.field-step;
+                Slider {
+                    horizontal-stretch: 1;
+                    minimum: 1;
+                    maximum: 50;
+                    step: 1;
+                    value: root.data.step;
+                    released(v) => { root.set-step(round(v)); }
+                }
+                Text {
+                    width: 40px;
+                    text: "\{root.data.step}%";
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                }
+            }
+            if root.adjust: FieldRow {
+                label: Tr.field-hotkey-mute;
+                HotkeyRecorder {
+                    horizontal-stretch: 1;
+                    value: root.data.hotkey-mute;
+                    captured(t, c, a, s, m) => { return root.hotkey-captured(3, t, c, a, s, m); }
+                    cleared => { root.hotkey-cleared(3); }
+                }
+            }
+            if !root.adjust: FieldRow {
                 label: Tr.field-min;
                 Slider {
                     horizontal-stretch: 1;
@@ -543,7 +633,7 @@ component RecordCard inherits Card {
                     horizontal-alignment: right;
                 }
             }
-            FieldRow {
+            if !root.adjust: FieldRow {
                 label: Tr.field-max;
                 Slider {
                     horizontal-stretch: 1;
@@ -613,10 +703,12 @@ export component AppWindow inherits Window {
     callback set-name(string, string);
     callback set-process(string, int);
     callback refresh-processes();
-    callback hotkey-captured(string, string, bool, bool, bool, bool) -> bool;
-    callback hotkey-cleared(string);
+    callback hotkey-captured(string, int, string, bool, bool, bool, bool) -> bool;
+    callback hotkey-cleared(string, int);
     callback set-min(string, int);
     callback set-max(string, int);
+    callback set-mode(string, int);
+    callback set-step(string, int);
 
     callback download-update();
     callback install-update();
@@ -801,10 +893,12 @@ export component AppWindow inherits Window {
                     set-name(v) => { root.set-name(rec.id, v); }
                     set-process(v) => { root.set-process(rec.id, v); }
                     refresh-processes => { root.refresh-processes(); root.begin-edit(rec.id); }
-                    hotkey-captured(t, c, a, s, m) => { return root.hotkey-captured(rec.id, t, c, a, s, m); }
-                    hotkey-cleared => { root.hotkey-cleared(rec.id); }
+                    hotkey-captured(slot, t, c, a, s, m) => { return root.hotkey-captured(rec.id, slot, t, c, a, s, m); }
+                    hotkey-cleared(slot) => { root.hotkey-cleared(rec.id, slot); }
                     set-min(v) => { root.set-min(rec.id, v); }
                     set-max(v) => { root.set-max(rec.id, v); }
+                    set-mode(v) => { root.set-mode(rec.id, v); }
+                    set-step(v) => { root.set-step(rec.id, v); }
                 }
             }
         }
