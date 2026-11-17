@@ -126,10 +126,23 @@ pub fn format_hotkey(text: &str, physical: &str, ctrl: bool, alt: bool, shift: b
     HotKey::from_str(&combo).ok().map(|_| combo)
 }
 
-/// Letters, digits and numpad keys by their position, so `Ctrl+Ф` on a Cyrillic layout is `Ctrl+A`.
+/// Letters, digits, punctuation and numpad keys by their position, so `Ctrl+Ф` on a Cyrillic
+/// layout is `Ctrl+A` and `Ctrl+-` is `Ctrl+Minus` whatever the key prints.
 fn physical_key_name(physical: &str, text: &str) -> Option<String> {
+    #[rustfmt::skip]
+    const PUNCTUATION: &[&str] = &[
+        "Backquote", "Minus", "Equal", "BracketLeft", "BracketRight", "Backslash", "IntlBackslash",
+        "Semicolon", "Quote", "Comma", "Period", "Slash", "PrintScreen",
+    ];
     if let Some(c) = physical.strip_prefix("Key").or_else(|| physical.strip_prefix("Digit")) {
         return (c.len() == 1).then(|| c.to_string());
+    }
+    if PUNCTUATION.contains(&physical) {
+        return Some(physical.to_string());
+    }
+    // Numpad 5 with NumLock off has no Home/End-like meaning: the system sees it as Clear.
+    if physical == "Numpad5" && text != "5" {
+        return Some("NumpadClear".to_string());
     }
     let numpad = physical.strip_prefix("Numpad")?;
     // With NumLock off numpad keys send Home/End/arrows, and global hotkeys see those instead.
@@ -214,6 +227,10 @@ mod tests {
     fn letters_ignore_keyboard_layout() {
         assert_eq!(format_hotkey("ф", "KeyA", true, false, false, false).as_deref(), Some("Ctrl+A"));
         assert_eq!(format_hotkey("%", "Digit5", true, false, true, false).as_deref(), Some("Ctrl+Shift+5"));
+        assert_eq!(format_hotkey("-", "Minus", true, false, false, false).as_deref(), Some("Ctrl+Minus"));
+        assert_eq!(format_hotkey("ё", "Backquote", true, false, false, false).as_deref(), Some("Ctrl+Backquote"));
+        assert_eq!(format_hotkey("+", "Equal", true, false, true, false).as_deref(), Some("Ctrl+Shift+Equal"));
+        assert_eq!(format_hotkey("", "PrintScreen", true, false, false, false).as_deref(), Some("Ctrl+PrintScreen"));
     }
 
     #[test]
@@ -223,6 +240,7 @@ mod tests {
         assert_eq!(format_hotkey("+", "NumpadAdd", false, true, false, false).as_deref(), Some("Alt+NumpadAdd"));
         // NumLock off: the key acts as Home.
         assert_eq!(format_hotkey(&key(Key::Home), "Numpad7", true, false, false, false).as_deref(), Some("Ctrl+Home"));
+        assert_eq!(format_hotkey("", "Numpad5", true, false, false, false).as_deref(), Some("Ctrl+NumpadClear"));
         // Bare numpad digits would swallow typing too.
         assert_eq!(format_hotkey("5", "Numpad5", false, false, false, false), None);
     }
