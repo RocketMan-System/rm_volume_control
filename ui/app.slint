@@ -1879,6 +1879,8 @@ export component AppWindow inherits Window {
 
             // Update banner
             if root.update-state != 0: Reveal {
+                // A plain Rectangle stretches by default and would eat the space meant for the page.
+                vertical-stretch: 0;
                 VerticalLayout {
                     padding: 16px;
                     padding-left: 24px;
