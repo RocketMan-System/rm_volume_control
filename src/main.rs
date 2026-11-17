@@ -535,12 +535,18 @@ fn wire_callbacks(ui: &AppWindow) {
         });
     });
     ui.on_hotkey_captured(|id, slot, text, ctrl, alt, shift, meta| {
+        // Slint reports Cmd as `control` and Control as `meta` on macOS.
+        #[cfg(target_os = "macos")]
+        let (ctrl, meta) = (meta, ctrl);
         let physical = PHYSICAL_KEY.with_borrow(Clone::clone);
         let Some(hotkey) = hotkeys::format_hotkey(&text, &physical, ctrl, alt, shift, meta) else { return false };
         with_app(|app| app.update_record(&id, |r| *hotkey_slot(r, slot) = Some(hotkey)));
         true
     });
     ui.on_hotkey_mouse_captured(|id, slot, button, ctrl, alt, shift, meta| {
+        // Slint reports Cmd as `control` and Control as `meta` on macOS.
+        #[cfg(target_os = "macos")]
+        let (ctrl, meta) = (meta, ctrl);
         if mouse::Button::from_number(button).is_some_and(|b| !mouse::supported(b)) {
             return false;
         }
