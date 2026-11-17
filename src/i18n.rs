@@ -157,6 +157,12 @@ translations! {
     set_set_autostart => ["Start with system", "Запускати разом із системою", "Запускать вместе с системой"],
     set_set_start_minimized => ["Start minimized to tray", "Запускати згорнутим у трей", "Запускать свёрнутым в трей"],
     set_set_auto_update => ["Check for updates automatically", "Автоматично перевіряти оновлення", "Автоматически проверять обновления"],
+    set_set_beta_updates => ["Beta updates", "Бета-оновлення", "Бета-обновления"],
+    set_set_beta_updates_desc => [
+        "Also offer pre-release versions: new features sooner, but they may be less stable",
+        "Пропонувати також попередні версії: нові функції раніше, але вони можуть бути менш стабільними",
+        "Предлагать также предварительные версии: новые функции раньше, но они могут быть менее стабильными"
+    ],
     set_desktop_title => ["Application menu", "Меню застосунків", "Меню приложений"],
     set_desktop_missing => [
         "Not added to the application menu: no menu entry, and the taskbar may show a generic icon",

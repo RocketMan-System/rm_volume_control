@@ -6,6 +6,7 @@
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::cmp::Ordering;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -14,6 +15,12 @@ pub const RELEASES_PAGE: &str = "https://github.com/RocketMan-System/rm_volume_c
 const CHECKSUMS: &str = "SHA256SUMS.txt";
 /// Passed to the relaunched process so it waits for the old one to exit.
 pub const UPDATED_ARG: &str = "--updated";
+
+/// Version of this build. Beta builds get the full pre-release version (`1.4.0-beta.12`)
+/// from CI, as Cargo.toml only holds the base one.
+pub fn current_version() -> &'static str {
+    option_env!("APP_VERSION").filter(|v| !v.is_empty()).unwrap_or(env!("CARGO_PKG_VERSION"))
+}
 
 #[cfg(all(windows, target_arch = "x86_64"))]
 pub const ASSET_NAME: &str = "apps-volume-control-windows-x86_64.exe";
@@ -65,7 +72,7 @@ pub struct Release {
     pub checksums_url: Option<String>,
 }
 
-/// Parses `v1.2.3` / `1.2.3-rc.1` into comparable numbers (pre-release suffix ignored).
+/// Parses `v1.2.3` / `1.2.3-beta.4` into comparable numbers (pre-release suffix ignored).
 pub fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
     let v = v.trim().trim_start_matches(['v', 'V']);
     let core = v.split(['-', '+']).next()?;
@@ -76,11 +83,34 @@ pub fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
-pub fn is_newer(remote: &str, current: &str) -> bool {
-    match (parse_version(remote), parse_version(current)) {
-        (Some(r), Some(c)) => r > c,
-        _ => false,
+/// The pre-release part of a version: `beta.4` in `1.2.3-beta.4+build`.
+fn pre_release(v: &str) -> Option<&str> {
+    let v = v.split('+').next()?;
+    v.split_once('-').map(|(_, pre)| pre).filter(|pre| !pre.is_empty())
+}
+
+/// Semver order: `1.2.3-beta.2 < 1.2.3-beta.10 < 1.2.3`.
+pub fn compare_versions(a: &str, b: &str) -> Option<Ordering> {
+    let core = parse_version(a)?.cmp(&parse_version(b)?);
+    if core != Ordering::Equal {
+        return Some(core);
     }
+    Some(match (pre_release(a), pre_release(b)) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(a), Some(b)) => {
+            let ident = |x: &str| (x.parse::<u64>().ok(), x.to_string());
+            let a = a.split('.').map(ident);
+            let b = b.split('.').map(ident);
+            // Numeric identifiers sort before textual ones, as in semver.
+            a.map(|(n, s)| (n.is_none(), n, s)).cmp(b.map(|(n, s)| (n.is_none(), n, s)))
+        }
+    })
+}
+
+pub fn is_newer(remote: &str, current: &str) -> bool {
+    compare_versions(remote, current) == Some(Ordering::Greater)
 }
 
 /// Finds the hash for `file` in `sha256sum` output (`<hex>  <name>` or `<hex> *<name>`).
@@ -101,18 +131,36 @@ fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .tls_config(tls)
         .timeout_global(Some(std::time::Duration::from_secs(600)))
-        .user_agent(concat!("apps-volume-control/", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("apps-volume-control/{}", current_version()))
         .build()
         .into()
 }
 
-/// Returns the latest release if it is newer than the running version.
-pub fn check() -> Result<Option<Release>, String> {
-    let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
+fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String> {
     let mut resp =
-        agent().get(&url).header("Accept", "application/vnd.github+json").call().map_err(|e| e.to_string())?;
-    let rel: GhRelease = resp.body_mut().read_json().map_err(|e| e.to_string())?;
-    if rel.draft || rel.prerelease || !is_newer(&rel.tag_name, env!("CARGO_PKG_VERSION")) {
+        agent().get(url).header("Accept", "application/vnd.github+json").call().map_err(|e| e.to_string())?;
+    resp.body_mut().read_json().map_err(|e| e.to_string())
+}
+
+/// The newest of `releases`; pre-releases count only with `beta`.
+fn pick_newest(releases: Vec<GhRelease>, beta: bool) -> Option<GhRelease> {
+    releases
+        .into_iter()
+        .filter(|r| !r.draft && (beta || !r.prerelease) && parse_version(&r.tag_name).is_some())
+        .max_by(|a, b| compare_versions(&a.tag_name, &b.tag_name).unwrap_or(Ordering::Equal))
+}
+
+/// Returns the newest release if it is newer than the running version. With `beta`,
+/// pre-releases are considered too, so a stable release still wins when it is newer.
+pub fn check(beta: bool) -> Result<Option<Release>, String> {
+    let rel = if beta {
+        let releases = get_json(&format!("https://api.github.com/repos/{REPO}/releases?per_page=30"))?;
+        pick_newest(releases, true)
+    } else {
+        Some(get_json(&format!("https://api.github.com/repos/{REPO}/releases/latest"))?)
+    };
+    let Some(rel) = rel.filter(|r| !r.draft && (beta || !r.prerelease)) else { return Ok(None) };
+    if !is_newer(&rel.tag_name, current_version()) {
         return Ok(None);
     }
     let find = |name: &str| rel.assets.iter().find(|a| a.name == name).map(|a| a.browser_download_url.clone());
@@ -318,6 +366,34 @@ mod tests {
         assert_eq!(parse_version("4"), Some((4, 0, 0)));
         assert_eq!(parse_version("1.2.3-rc.1"), Some((1, 2, 3)));
         assert_eq!(parse_version("nightly"), None);
+    }
+
+    #[test]
+    fn orders_pre_releases() {
+        assert!(is_newer("1.4.0-beta.2", "1.3.0"));
+        assert!(is_newer("1.4.0", "1.4.0-beta.9"));
+        assert!(is_newer("v1.4.0-beta.10", "1.4.0-beta.9"));
+        assert!(!is_newer("1.4.0-beta.9", "1.4.0"));
+        assert!(!is_newer("1.4.0-beta.3", "1.4.0-beta.3"));
+        assert!(!is_newer("1.3.0-beta.5", "1.3.0"));
+        assert_eq!(compare_versions("1.0.0-alpha", "1.0.0-alpha.1"), Some(Ordering::Less));
+        assert_eq!(compare_versions("1.0.0-beta.2", "1.0.0-beta.x"), Some(Ordering::Less));
+    }
+
+    fn gh(tag: &str, prerelease: bool) -> GhRelease {
+        GhRelease { tag_name: tag.into(), html_url: String::new(), draft: false, prerelease, assets: Vec::new() }
+    }
+
+    #[test]
+    fn beta_channel_takes_newest_of_both() {
+        let tags = |list: &[(&str, bool)]| list.iter().map(|(t, p)| gh(t, *p)).collect::<Vec<_>>();
+        let newest = |list: &[(&str, bool)], beta| pick_newest(tags(list), beta).map(|r| r.tag_name);
+        let list = [("v1.3.0", false), ("v1.4.0-beta.7", true), ("v1.4.0-beta.12", true)];
+        assert_eq!(newest(&list, true).as_deref(), Some("v1.4.0-beta.12"));
+        assert_eq!(newest(&list, false).as_deref(), Some("v1.3.0"));
+        // Once the stable release is out it beats its betas.
+        let list = [("v1.4.0-beta.12", true), ("v1.4.0", false)];
+        assert_eq!(newest(&list, true).as_deref(), Some("v1.4.0"));
     }
 
     #[test]

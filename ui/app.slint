@@ -95,6 +95,8 @@ export global Tr {
     in property <string> set-autostart: "Start with system";
     in property <string> set-start-minimized: "Start minimized to tray";
     in property <string> set-auto-update: "Check for updates automatically";
+    in property <string> set-beta-updates: "Beta updates";
+    in property <string> set-beta-updates-desc: "Also offer pre-release versions";
     in property <string> desktop-title: "Application menu";
     in property <string> desktop-missing: "Not added to the application menu";
     in property <string> desktop-ours: "Added to the application menu";
@@ -688,6 +690,7 @@ export component AppWindow inherits Window {
     in-out property <bool> autostart;
     in-out property <bool> start-minimized;
     in-out property <bool> auto-update;
+    in-out property <bool> beta-updates;
     // Linux AppImage menu entry (src/desktop.rs): 0 n/a, 1 missing, 2 ours, 3 another tool's
     in property <int> desktop-state;
     in-out property <bool> desktop-prompt;
@@ -962,6 +965,12 @@ export component AppWindow inherits Window {
                         SettingSwitch {
                             text: Tr.set-auto-update;
                             checked <=> root.auto-update;
+                            toggled => { root.settings-changed(); }
+                        }
+                        SettingSwitch {
+                            text: Tr.set-beta-updates;
+                            description: Tr.set-beta-updates-desc;
+                            checked <=> root.beta-updates;
                             toggled => { root.settings-changed(); }
                         }
                     }

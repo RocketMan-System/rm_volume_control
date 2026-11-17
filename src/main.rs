@@ -287,6 +287,12 @@ impl App {
         self.cfg.close_to_tray = ui.get_close_to_tray();
         self.cfg.start_minimized = ui.get_start_minimized();
         self.cfg.auto_update = ui.get_auto_update();
+        let beta = ui.get_beta_updates();
+        if beta && !self.cfg.beta_updates {
+            // Look for a pre-release right away; deferred as this runs inside `with_app`.
+            Timer::single_shot(Duration::ZERO, || check_updates(false));
+        }
+        self.cfg.beta_updates = beta;
         self.save();
     }
 
@@ -326,8 +332,9 @@ fn check_updates(manual: bool) {
             app.ui.set_update_check_status(text);
         });
     }
+    let beta = with_app(|app| app.cfg.beta_updates).unwrap_or(false);
     std::thread::spawn(move || {
-        let result = updater::check();
+        let result = updater::check(beta);
         let _ = slint::invoke_from_event_loop(move || {
             with_app(|app| match result {
                 Ok(Some(release)) => {
@@ -622,7 +629,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let tray = create_tray()?;
     let records = Rc::new(VecModel::<RecordData>::default());
     ui.set_records(ModelRc::from(records.clone()));
-    ui.set_version(env!("CARGO_PKG_VERSION").into());
+    ui.set_version(updater::current_version().into());
     ui.set_language_names(ModelRc::new(VecModel::from(
         i18n::LANG_NAMES.iter().map(|n| SharedString::from(*n)).collect::<Vec<_>>(),
     )));
@@ -633,6 +640,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_autostart(cfg.autostart);
     ui.set_start_minimized(cfg.start_minimized);
     ui.set_auto_update(cfg.auto_update);
+    ui.set_beta_updates(cfg.beta_updates);
 
     let (audio, audio_thread) = audio::spawn(on_audio_event);
     let hotkeys = Hotkeys::new(audio.clone());

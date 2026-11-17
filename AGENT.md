@@ -91,6 +91,12 @@ scripts/              install-macos.sh, install-linux.sh (also published as rele
   to `main`, if release `v<Cargo.toml version>` does not exist, it builds all platforms and publishes it with
   `.github/release-notes.md` + generated notes. To release: bump `version` in `Cargo.toml` (and keep
   `Cargo.lock` committed — the build uses `--locked`).
+- Branches: code goes to `dev`; `beta` and `main` only receive merges. Every push to `beta` publishes
+  pre-release `v<version>-beta.<run number>`, skipped with a warning while `v<version>` is already released —
+  bump the version on `dev` first. CI passes the full version as `APP_VERSION`, and
+  `updater::current_version()` prefers it over `CARGO_PKG_VERSION`, so beta builds know their own suffix.
+- Beta channel (`Config::beta_updates`): the updater lists recent releases and takes the newest of stable and
+  pre-releases in semver order (`1.4.0-beta.9 < 1.4.0`); without it only `/releases/latest` is used.
 
 ## Commands
 

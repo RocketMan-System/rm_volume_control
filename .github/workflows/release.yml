@@ -1,10 +1,13 @@
 name: Build & Release
 
-# Every push to main is tested. When the version in Cargo.toml has no release yet,
-# binaries for all platforms are built and published as release v<version>.
+# Every push is tested.
+# main: when the version in Cargo.toml has no release yet, binaries for all platforms
+#   are built and published as release v<version>.
+# beta: every push is published as pre-release v<version>-beta.<run number>, unless
+#   v<version> is already released (bump the version in Cargo.toml first).
 on:
   push:
-    branches: [main]
+    branches: [main, beta, dev]
   pull_request:
   workflow_dispatch:
 
@@ -23,24 +26,46 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
+      base: ${{ steps.v.outputs.base }}
       release: ${{ steps.v.outputs.release }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
       - id: v
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ github.ref }}" != "refs/heads/main" ]; then
-            echo "release=false" >> "$GITHUB_OUTPUT"
-          elif gh release view "v$version" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "Release v$version already exists, nothing to publish"
-            echo "release=false" >> "$GITHUB_OUTPUT"
+          base=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          released() { gh release view "v$1" --repo "${{ github.repository }}" >/dev/null 2>&1; }
+          version=$base
+          prerelease=false
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            release=false
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            if released "$base"; then
+              echo "Release v$base already exists, nothing to publish"
+              release=false
+            else
+              echo "Release v$base not found, it will be built"
+              release=true
+            fi
+          elif [ "${{ github.ref }}" = "refs/heads/beta" ]; then
+            if released "$base"; then
+              echo "::warning::v$base is already released: bump the version in Cargo.toml to publish a beta"
+              release=false
+            else
+              version="$base-beta.${{ github.run_number }}"
+              echo "Pre-release v$version will be built"
+              release=true
+              prerelease=true
+            fi
           else
-            echo "Release v$version not found, it will be built"
-            echo "release=true" >> "$GITHUB_OUTPUT"
+            release=false
           fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
 
   test:
     strategy:
@@ -71,6 +96,9 @@ jobs:
           - os: macos-latest
             name: macos
     runs-on: ${{ matrix.os }}
+    env:
+      # Full version (with the beta suffix) baked into the binary for the updater.
+      APP_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - name: Linux dependencies
@@ -127,7 +155,7 @@ jobs:
           lipo -create -output "$APP/Contents/MacOS/apps-volume-control" \
             target/aarch64-apple-darwin/release/apps-volume-control \
             target/x86_64-apple-darwin/release/apps-volume-control
-          sed "s/__VERSION__/${{ needs.version.outputs.version }}/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
+          sed "s/__VERSION__/${{ needs.version.outputs.base }}/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
           cp assets/icon.icns "$APP/Contents/Resources/icon.icns"
           # No Developer ID: ad-hoc signature so Apple Silicon accepts the universal binary.
           codesign --force --deep --sign - "$APP"
@@ -157,9 +185,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="v${{ needs.version.outputs.version }}"
+          extra=()
+          if [ "${{ needs.version.outputs.prerelease }}" = "true" ]; then
+            extra=(--prerelease --latest=false)
+          fi
           gh release create "$tag" dist/* \
             --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \
             --title "Apps Volume Control $tag" \
             --notes-file .github/release-notes.md \
-            --generate-notes
+            --generate-notes \
+            "${extra[@]}"
